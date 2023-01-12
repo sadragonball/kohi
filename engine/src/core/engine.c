@@ -352,7 +352,7 @@ b8 engine_run() {
     clock_update(&engine_state->clock);
     engine_state->last_time = engine_state->clock.elapsed;
     // f64 running_time = 0;
-    u8 frame_count = 0;
+    // u8 frame_count = 0;
     f64 target_frame_seconds = 1.0f / 60;
     f64 frame_elapsed_time = 0;
 
@@ -415,9 +415,9 @@ b8 engine_run() {
                     platform_sleep(remaining_ms - 1);
                 }
 
-                frame_count++;
+                // frame_count++;
             }
-
+            // KDEBUG("frame_count %d", frame_count);
             // NOTE: Input update/state copying should always be handled
             // after any input should be recorded; I.E. before this line.
             // As a safety, input is the last thing to be updated before

@@ -182,7 +182,7 @@ b8 game_initialize(application* game_inst) {
     // Move debug text to new bottom of screen.
     ui_text_set_position(&state->test_text, vec3_create(20, game_inst->app_config.start_height - 75, 0));
 
-    if (!ui_text_create(UI_TEXT_TYPE_SYSTEM, "Noto Sans CJK JP", 31, "Some system text 123, \n\tyo!\n\n\tこんにちは 한", &state->test_sys_text)) {
+    if (!ui_text_create(UI_TEXT_TYPE_SYSTEM, "Noto Sans CJK JP", 31, "Some system text 123, 你好啊", &state->test_sys_text)) {
         KERROR("Failed to load basic ui system text.");
         return false;
     }
