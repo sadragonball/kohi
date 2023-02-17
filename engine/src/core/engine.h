@@ -45,6 +45,8 @@ typedef struct application_config {
 
     /** @brief A darray of render view configurations. */
     render_view_config* render_views;
+
+    renderer_plugin renderer_plugin;
 } application_config;
 
 /**
@@ -57,6 +59,14 @@ KAPI b8 engine_create(struct application* game_inst);
 
 /**
  * @brief Starts the main engine loop.
+ * @param game_inst A pointer to the application instance associated with the engine
  * @returns True on success; otherwise false.
  */
-KAPI b8 engine_run();
+KAPI b8 engine_run(struct application* game_inst);
+
+/**
+ * @brief A callback made when the event system is initialized,
+ * which internally allows the engine to begin listening for events
+ * required for initialization.
+ */
+void engine_on_event_system_initialized();

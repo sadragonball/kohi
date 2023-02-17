@@ -304,7 +304,7 @@ typedef enum keys {
     /** @brief The right (square) bracket key e.g. ]} */
     KEY_RBRACKET = 0xDD,
 
-    KEYS_MAX_KEYS
+    KEYS_MAX_KEYS = 0xFF
 } keys;
 
 /**
@@ -313,8 +313,10 @@ typedef enum keys {
  *
  * @param memory_requirement The required size of the state memory.
  * @param state Either 0 or the allocated block of state memory.
+ * @param config Ignored.
+ * @returns True on success; otherwise false.
  */
-void input_system_initialize(u64* memory_requirement, void* state);
+b8 input_system_initialize(u64* memory_requirement, void* state, void* config);
 
 /**
  * @brief Shuts the input system down.
@@ -325,6 +327,7 @@ void input_system_shutdown(void* state);
 /**
  * @brief Updates the input system every frame.
  * @param delta_time The delta time in seconds since the last frame.
+ * TODO(travis): refactor to use system manager update, with state, but must be called at end of frame.
  */
 void input_update(f64 delta_time);
 
@@ -438,4 +441,4 @@ KAPI const char* input_keycode_str(keys key);
 
 KAPI void input_keymap_push(const struct keymap* map);
 
-KAPI void input_keymap_pop();
+KAPI b8 input_keymap_pop();

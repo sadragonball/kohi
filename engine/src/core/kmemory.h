@@ -48,6 +48,8 @@ typedef enum memory_tag {
     MEMORY_TAG_GPU_LOCAL,
     MEMORY_TAG_BITMAP_FONT,
     MEMORY_TAG_SYSTEM_FONT,
+    MEMORY_TAG_KEYMAP,
+    MEMORY_TAG_HASHTABLE,
 
     MEMORY_TAG_MAX_TAGS
 } memory_tag;
@@ -62,12 +64,12 @@ typedef struct memory_system_configuration {
  * @brief Initializes the memory system.
  * @param config The configuration for this system.
  */
-KAPI b8 memory_system_initialize(memory_system_configuration config);
+b8 memory_system_initialize(memory_system_configuration config);
 
 /**
  * @brief Shuts down the memory system.
  */
-KAPI void memory_system_shutdown();
+void memory_system_shutdown(void* state);
 
 /**
  * @brief Performs a memory allocation from the host of the given size. The allocation

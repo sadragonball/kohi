@@ -8,23 +8,34 @@
 #include "core/event.h"
 #include "core/kthread.h"
 #include "core/kmutex.h"
+#include "core/kmemory.h"
+#include "core/kstring.h"
+#include "containers/darray.h"
 
 #include "containers/darray.h"
 
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <windowsx.h>  // param input extraction
 #include <stdlib.h>
 
-// For surface creation
-#include <vulkan/vulkan.h>
-#include <vulkan/vulkan_win32.h>
-#include "renderer/vulkan/vulkan_types.inl"
-
-typedef struct platform_state {
+typedef struct win32_handle_info {
     HINSTANCE h_instance;
     HWND hwnd;
-    VkSurfaceKHR surface;
+} win32_handle_info;
 
+typedef struct win32_file_watch {
+    u32 id;
+    const char *file_path;
+    FILETIME last_write_time;
+} win32_file_watch;
+
+typedef struct platform_state {
+    win32_handle_info handle;
+    CONSOLE_SCREEN_BUFFER_INFO std_output_csbi;
+    CONSOLE_SCREEN_BUFFER_INFO err_output_csbi;
+    // darray
+    win32_file_watch *watches;
 } platform_state;
 
 static platform_state *state_ptr;
@@ -33,6 +44,7 @@ static platform_state *state_ptr;
 static f64 clock_frequency;
 static LARGE_INTEGER start_time;
 
+void platform_update_watches();
 LRESULT CALLBACK win32_process_message(HWND hwnd, u32 msg, WPARAM w_param, LPARAM l_param);
 
 void clock_setup() {
@@ -42,30 +54,27 @@ void clock_setup() {
     QueryPerformanceCounter(&start_time);
 }
 
-b8 platform_system_startup(
-    u64 *memory_requirement,
-    void *state,
-    const char *application_name,
-    i32 x,
-    i32 y,
-    i32 width,
-    i32 height) {
+b8 platform_system_startup(u64 *memory_requirement, void *state, void *config) {
+    platform_system_config *typed_config = (platform_system_config *)config;
     *memory_requirement = sizeof(platform_state);
     if (state == 0) {
         return true;
     }
     state_ptr = state;
-    state_ptr->h_instance = GetModuleHandleA(0);
+    state_ptr->handle.h_instance = GetModuleHandleA(0);
+
+    GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &state_ptr->std_output_csbi);
+    GetConsoleScreenBufferInfo(GetStdHandle(STD_ERROR_HANDLE), &state_ptr->err_output_csbi);
 
     // Setup and register window class.
-    HICON icon = LoadIcon(state_ptr->h_instance, IDI_APPLICATION);
+    HICON icon = LoadIcon(state_ptr->handle.h_instance, IDI_APPLICATION);
     WNDCLASSA wc;
     memset(&wc, 0, sizeof(wc));
     wc.style = CS_DBLCLKS;  // Get double-clicks
     wc.lpfnWndProc = win32_process_message;
     wc.cbClsExtra = 0;
     wc.cbWndExtra = 0;
-    wc.hInstance = state_ptr->h_instance;
+    wc.hInstance = state_ptr->handle.h_instance;
     wc.hIcon = icon;
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);  // NULL; // Manage the cursor manually
     wc.hbrBackground = NULL;                   // Transparent
@@ -77,10 +86,10 @@ b8 platform_system_startup(
     }
 
     // Create window
-    u32 client_x = x;
-    u32 client_y = y;
-    u32 client_width = width;
-    u32 client_height = height;
+    u32 client_x = typed_config->x;
+    u32 client_y = typed_config->y;
+    u32 client_width = typed_config->width;
+    u32 client_height = typed_config->height;
 
     u32 window_x = client_x;
     u32 window_y = client_y;
@@ -107,9 +116,9 @@ b8 platform_system_startup(
     window_height += border_rect.bottom - border_rect.top;
 
     HWND handle = CreateWindowExA(
-        window_ex_style, "kohi_window_class", application_name,
+        window_ex_style, "kohi_window_class", typed_config->application_name,
         window_style, window_x, window_y, window_width, window_height,
-        0, 0, state_ptr->h_instance, 0);
+        0, 0, state_ptr->handle.h_instance, 0);
 
     if (handle == 0) {
         MessageBoxA(NULL, "Window creation failed!", "Error!", MB_ICONEXCLAMATION | MB_OK);
@@ -117,7 +126,7 @@ b8 platform_system_startup(
         KFATAL("Window creation failed!");
         return false;
     } else {
-        state_ptr->hwnd = handle;
+        state_ptr->handle.hwnd = handle;
     }
 
     // Show the window
@@ -125,7 +134,7 @@ b8 platform_system_startup(
     i32 show_window_command_flags = should_activate ? SW_SHOW : SW_SHOWNOACTIVATE;
     // If initially minimized, use SW_MINIMIZE : SW_SHOWMINNOACTIVE;
     // If initially maximized, use SW_SHOWMAXIMIZED : SW_MAXIMIZE
-    ShowWindow(state_ptr->hwnd, show_window_command_flags);
+    ShowWindow(state_ptr->handle.hwnd, show_window_command_flags);
 
     // Clock setup
     clock_setup();
@@ -134,9 +143,9 @@ b8 platform_system_startup(
 }
 
 void platform_system_shutdown(void *plat_state) {
-    if (state_ptr && state_ptr->hwnd) {
-        DestroyWindow(state_ptr->hwnd);
-        state_ptr->hwnd = 0;
+    if (state_ptr && state_ptr->handle.hwnd) {
+        DestroyWindow(state_ptr->handle.hwnd);
+        state_ptr->handle.hwnd = 0;
     }
 }
 
@@ -148,15 +157,18 @@ b8 platform_pump_messages() {
             DispatchMessageA(&message);
         }
     }
+    platform_update_watches();
     return true;
 }
 
 void *platform_allocate(u64 size, b8 aligned) {
-    return malloc(size);
+    // return malloc(size);
+    return (void *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, size);
 }
 
 void platform_free(void *block, b8 aligned) {
-    free(block);
+    // free(block);
+    HeapFree(GetProcessHeap(), 0, block);
 }
 
 void *platform_zero_memory(void *block, u64 size) {
@@ -180,10 +192,19 @@ void platform_console_write(const char *message, u8 colour) {
     u64 length = strlen(message);
     DWORD number_written = 0;
     WriteConsoleA(GetStdHandle(STD_OUTPUT_HANDLE), message, (DWORD)length, &number_written, 0);
+
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    if (state_ptr) {
+        csbi = state_ptr->std_output_csbi;
+    } else {
+        GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi);
+    }
+    SetConsoleTextAttribute(console_handle, csbi.wAttributes);
 }
 
 void platform_console_write_error(const char *message, u8 colour) {
     HANDLE console_handle = GetStdHandle(STD_ERROR_HANDLE);
+
     // FATAL,ERROR,WARN,INFO,DEBUG,TRACE
     static u8 levels[6] = {64, 4, 6, 2, 1, 8};
     SetConsoleTextAttribute(console_handle, levels[colour]);
@@ -191,6 +212,14 @@ void platform_console_write_error(const char *message, u8 colour) {
     u64 length = strlen(message);
     DWORD number_written = 0;
     WriteConsoleA(GetStdHandle(STD_ERROR_HANDLE), message, (DWORD)length, &number_written, 0);
+
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    if (state_ptr) {
+        csbi = state_ptr->err_output_csbi;
+    } else {
+        GetConsoleScreenBufferInfo(GetStdHandle(STD_ERROR_HANDLE), &csbi);
+    }
+    SetConsoleTextAttribute(console_handle, csbi.wAttributes);
 }
 
 f64 platform_get_absolute_time() {
@@ -212,6 +241,15 @@ i32 platform_get_processor_count() {
     GetSystemInfo(&sysinfo);
     KINFO("%i processor cores detected.", sysinfo.dwNumberOfProcessors);
     return sysinfo.dwNumberOfProcessors;
+}
+
+void platform_get_handle_info(u64 *out_size, void *memory) {
+    *out_size = sizeof(win32_handle_info);
+    if (!memory) {
+        return;
+    }
+
+    kcopy_memory(memory, &state_ptr->handle, *out_size);
 }
 
 // NOTE: Begin threads
@@ -339,27 +377,234 @@ b8 kmutex_unlock(kmutex *mutex) {
 
 // NOTE: End mutexes.
 
-void platform_get_required_extension_names(const char ***names_darray) {
-    darray_push(*names_darray, &"VK_KHR_win32_surface");
+b8 platform_dynamic_library_load(const char *name, dynamic_library *out_library) {
+    if (!out_library) {
+        return false;
+    }
+    kzero_memory(out_library, sizeof(dynamic_library));
+    if (!name) {
+        return false;
+    }
+
+    char filename[MAX_PATH];
+    kzero_memory(filename, sizeof(char) * MAX_PATH);
+    string_format(filename, "%s.dll", name);
+
+    HMODULE library = LoadLibraryA(filename);
+    if (!library) {
+        return false;
+    }
+
+    out_library->name = string_duplicate(name);
+    out_library->filename = string_duplicate(filename);
+
+    out_library->internal_data_size = sizeof(HMODULE);
+    out_library->internal_data = library;
+
+    out_library->functions = darray_create(dynamic_library_function);
+
+    return true;
 }
 
-// Surface creation for Vulkan
-b8 platform_create_vulkan_surface(vulkan_context *context) {
-    if (!state_ptr) {
-        return false;
-    }
-    VkWin32SurfaceCreateInfoKHR create_info = {VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR};
-    create_info.hinstance = state_ptr->h_instance;
-    create_info.hwnd = state_ptr->hwnd;
-
-    VkResult result = vkCreateWin32SurfaceKHR(context->instance, &create_info, context->allocator, &state_ptr->surface);
-    if (result != VK_SUCCESS) {
-        KFATAL("Vulkan surface creation failed.");
+b8 platform_dynamic_library_unload(dynamic_library *library) {
+    if (!library) {
         return false;
     }
 
-    context->surface = state_ptr->surface;
+    HMODULE internal_module = (HMODULE)library->internal_data;
+    if (!internal_module) {
+        return false;
+    }
+
+    if (library->name) {
+        u64 length = string_length(library->name);
+        kfree((void *)library->name, sizeof(char) * (length + 1), MEMORY_TAG_STRING);
+    }
+
+    if (library->filename) {
+        u64 length = string_length(library->filename);
+        kfree((void *)library->filename, sizeof(char) * (length + 1), MEMORY_TAG_STRING);
+    }
+
+    if (library->functions) {
+        u32 count = darray_length(library->functions);
+        for (u32 i = 0; i < count; ++i) {
+            dynamic_library_function *f = &library->functions[i];
+            if (f->name) {
+                u64 length = string_length(f->name);
+                kfree((void *)f->name, sizeof(char) * (length + 1), MEMORY_TAG_STRING);
+            }
+        }
+
+        darray_destroy(library->functions);
+        library->functions = 0;
+    }
+
+    BOOL result = FreeLibrary(internal_module);
+    if (result == 0) {
+        return false;
+    }
+
+    kzero_memory(library, sizeof(dynamic_library));
+
     return true;
+}
+
+b8 platform_dynamic_library_load_function(const char *name, dynamic_library *library) {
+    if (!name || !library) {
+        return false;
+    }
+
+    if (!library->internal_data) {
+        return false;
+    }
+
+    FARPROC f_addr = GetProcAddress((HMODULE)library->internal_data, name);
+    if (!f_addr) {
+        return false;
+    }
+
+    dynamic_library_function f = {0};
+    f.pfn = f_addr;
+    f.name = string_duplicate(name);
+    darray_push(library->functions, f);
+
+    return true;
+}
+
+const char *platform_dynamic_library_extension() {
+    return ".dll";
+}
+
+const char *platform_dynamic_library_prefix() {
+    return "";
+}
+
+platform_error_code platform_copy_file(const char *source, const char *dest, b8 overwrite_if_exists) {
+    BOOL result = CopyFileA(source, dest, !overwrite_if_exists);
+    if (!result) {
+        DWORD err = GetLastError();
+        if (err == ERROR_FILE_NOT_FOUND) {
+            return PLATFORM_ERROR_FILE_NOT_FOUND;
+        } else if (err == ERROR_SHARING_VIOLATION) {
+            return PLATFORM_ERROR_FILE_LOCKED;
+        } else {
+            return PLATFORM_ERROR_UNKNOWN;
+        }
+    }
+    return PLATFORM_ERROR_SUCCESS;
+}
+
+static b8 register_watch(const char *file_path, u32 *out_watch_id) {
+    if (!state_ptr || !file_path || !out_watch_id) {
+        if (out_watch_id) {
+            *out_watch_id = INVALID_ID;
+        }
+        return false;
+    }
+    *out_watch_id = INVALID_ID;
+
+    if (!state_ptr->watches) {
+        state_ptr->watches = darray_create(win32_file_watch);
+    }
+
+    WIN32_FIND_DATAA data;
+    HANDLE file_handle = FindFirstFileA(file_path, &data);
+    if (file_handle == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    BOOL result = FindClose(file_handle);
+    if (result == 0) {
+        return false;
+    }
+
+    u32 count = darray_length(state_ptr->watches);
+    for (u32 i = 0; i < count; ++i) {
+        win32_file_watch *w = &state_ptr->watches[i];
+        if (w->id == INVALID_ID) {
+            // Found a free slot to use.
+            w->id = i;
+            w->file_path = string_duplicate(file_path);
+            w->last_write_time = data.ftLastWriteTime;
+            *out_watch_id = i;
+            return true;
+        }
+    }
+
+    // If no empty slot is available, create and push a new entry.
+    win32_file_watch w = {0};
+    w.id = count;
+    w.file_path = string_duplicate(file_path);
+    w.last_write_time = data.ftLastWriteTime;
+    *out_watch_id = count;
+    darray_push(state_ptr->watches, w);
+
+    return true;
+}
+
+static b8 unregister_watch(u32 watch_id) {
+    if (!state_ptr || !state_ptr->watches) {
+        return false;
+    }
+
+    u32 count = darray_length(state_ptr->watches);
+    if (count == 0 || watch_id > (count - 1)) {
+        return false;
+    }
+
+    win32_file_watch *w = &state_ptr->watches[watch_id];
+    w->id = INVALID_ID;
+    u32 len = string_length(w->file_path);
+    kfree((void *)w->file_path, sizeof(char) * (len + 1), MEMORY_TAG_STRING);
+    w->file_path = 0;
+    kzero_memory(&w->last_write_time, sizeof(FILETIME));
+
+    return true;
+}
+
+b8 platform_watch_file(const char *file_path, u32 *out_watch_id) {
+    return register_watch(file_path, out_watch_id);
+}
+
+b8 platform_unwatch_file(u32 watch_id) {
+    return unregister_watch(watch_id);
+}
+
+void platform_update_watches() {
+    if (!state_ptr || !state_ptr->watches) {
+        return;
+    }
+
+    u32 count = darray_length(state_ptr->watches);
+    for (u32 i = 0; i < count; ++i) {
+        win32_file_watch *f = &state_ptr->watches[i];
+        if (f->id != INVALID_ID) {
+            WIN32_FIND_DATAA data;
+            HANDLE file_handle = FindFirstFileA(f->file_path, &data);
+            if (file_handle == INVALID_HANDLE_VALUE) {
+                // This means the file has been deleted, remove from watch.
+                event_context context = {0};
+                context.data.u32[0] = f->id;
+                event_fire(EVENT_CODE_WATCHED_FILE_DELETED, 0, context);
+                KINFO("File watch id %d has been removed.", f->id);
+                unregister_watch(f->id);
+                continue;
+            }
+            BOOL result = FindClose(file_handle);
+            if (result == 0) {
+                continue;
+            }
+
+            // Check the file time to see if it has been changed and update/notify if so.
+            if (CompareFileTime(&data.ftLastWriteTime, &f->last_write_time) != 0) {
+                f->last_write_time = data.ftLastWriteTime;
+                // Notify listeners.
+                event_context context = {0};
+                context.data.u32[0] = f->id;
+                event_fire(EVENT_CODE_WATCHED_FILE_WRITTEN, 0, context);
+            }
+        }
+    }
 }
 
 LRESULT CALLBACK win32_process_message(HWND hwnd, u32 msg, WPARAM w_param, LPARAM l_param) {

@@ -30,10 +30,10 @@ static input_state* state_ptr;
 
 b8 check_modifiers(keymap_modifier modifiers);
 
-void input_system_initialize(u64* memory_requirement, void* state) {
+b8 input_system_initialize(u64* memory_requirement, void* state, void* config) {
     *memory_requirement = sizeof(input_state);
     if (state == 0) {
-        return;
+        return true;
     }
     kzero_memory(state, sizeof(input_state));
     state_ptr = state;
@@ -43,6 +43,8 @@ void input_system_initialize(u64* memory_requirement, void* state) {
     // state_ptr->active_keymap = keymap_create();
 
     KINFO("Input subsystem initialized.");
+
+    return true;
 }
 
 void input_system_shutdown(void* state) {
@@ -562,13 +564,12 @@ void input_keymap_push(const keymap* map) {
     }
 }
 
-void input_keymap_pop() {
+b8 input_keymap_pop() {
     if (state_ptr) {
         // Pop the keymap from the stack, then re-apply the stack.
         keymap popped;
-        if (!stack_pop(&state_ptr->keymap_stack, &popped)) {
-            KERROR("Failed to pop keymap!");
-            return;
-        }
+        return stack_pop(&state_ptr->keymap_stack, &popped);
     }
+
+    return false;
 }
