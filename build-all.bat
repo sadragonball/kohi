@@ -54,4 +54,8 @@ REM Tools
 make -f "Makefile.executable.mak" %ACTION% TARGET=%TARGET% ASSEMBLY=tools ADDL_INC_FLAGS=-Iengine\src ADDL_LINK_FLAGS=-lengine
 IF %ERRORLEVEL% NEQ 0 (echo Error:%ERRORLEVEL% && exit)
 
+REM Editor
+make -f "Makefile.executable.mak" %ACTION% TARGET=%TARGET% ASSEMBLY=editor ADDL_INC_FLAGS="-Iengine\src" ADDL_LINK_FLAGS="-lengine"
+IF %ERRORLEVEL% NEQ 0 (echo Error:%ERRORLEVEL% && exit)
+
 ECHO All assemblies %ACTION_STR_PAST% successfully on %PLATFORM% (%TARGET%).

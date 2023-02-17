@@ -5,6 +5,21 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "Launch Editor",
+            "type": "cppdbg",
+            "request": "launch",
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}/bin/",
+            "environment": [],
+            "program": "${workspaceFolder}/bin/editor",
+            "windows": {
+                "type": "cppvsdbg",
+                "program": "${workspaceFolder}/bin/editor.exe",
+                // cppvsdbg requires this instead of externalConsole
+                "console": "externalTerminal"
+            }
+        },
+        {
             "name": "Launch TestBed",
             "type": "cppdbg",
             "request": "launch",
