@@ -1,12 +1,17 @@
 #include "vulkan_pipeline.h"
-#include "vulkan_utils.h"
+
+#include <containers/darray.h>
+#include <vulkan/vulkan_core.h>
 
 #include "core/kmemory.h"
+#include "core/kstring.h"
 #include "core/logger.h"
-
-#include "systems/shader_system.h"
-
 #include "math/math_types.h"
+#include "renderer/renderer_types.h"
+#include "renderer/vulkan/vulkan_types.h"
+#include "resources/resource_types.h"
+#include "systems/shader_system.h"
+#include "vulkan_utils.h"
 
 b8 vulkan_graphics_pipeline_create(vulkan_context* context, const vulkan_pipeline_config* config, vulkan_pipeline* out_pipeline) {
     // Viewport state
@@ -20,7 +25,7 @@ b8 vulkan_graphics_pipeline_create(vulkan_context* context, const vulkan_pipelin
     VkPipelineRasterizationStateCreateInfo rasterizer_create_info = {VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
     rasterizer_create_info.depthClampEnable = VK_FALSE;
     rasterizer_create_info.rasterizerDiscardEnable = VK_FALSE;
-    rasterizer_create_info.polygonMode = config->is_wireframe ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL;
+    rasterizer_create_info.polygonMode = (config->shader_flags & SHADER_FLAG_WIREFRAME) ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL;
     rasterizer_create_info.lineWidth = 1.0f;
     switch (config->cull_mode) {
         case FACE_CULL_MODE_NONE:
@@ -37,11 +42,27 @@ b8 vulkan_graphics_pipeline_create(vulkan_context* context, const vulkan_pipelin
             rasterizer_create_info.cullMode = VK_CULL_MODE_FRONT_AND_BACK;
             break;
     }
-    rasterizer_create_info.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+
+    if (config->winding == RENDERER_WINDING_CLOCKWISE) {
+        rasterizer_create_info.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    } else if (config->winding == RENDERER_WINDING_COUNTER_CLOCKWISE) {
+        rasterizer_create_info.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    } else {
+        KWARN("Invalid front-face winding order specified, default to counter-clockwise");
+        rasterizer_create_info.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    }
     rasterizer_create_info.depthBiasEnable = VK_FALSE;
     rasterizer_create_info.depthBiasConstantFactor = 0.0f;
     rasterizer_create_info.depthBiasClamp = 0.0f;
     rasterizer_create_info.depthBiasSlopeFactor = 0.0f;
+
+    // Smooth line rasterisation, if supported.
+    VkPipelineRasterizationLineStateCreateInfoEXT line_rasterization_ext = {0};
+    if (context->device.support_flags & VULKAN_DEVICE_SUPPORT_FLAG_LINE_SMOOTH_RASTERISATION_BIT) {
+        line_rasterization_ext.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_LINE_STATE_CREATE_INFO_EXT;
+        line_rasterization_ext.lineRasterizationMode = VK_LINE_RASTERIZATION_MODE_RECTANGULAR_SMOOTH_EXT;
+        rasterizer_create_info.pNext = &line_rasterization_ext;
+    }
 
     // Multisampling.
     VkPipelineMultisampleStateCreateInfo multisampling_create_info = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
@@ -61,7 +82,25 @@ b8 vulkan_graphics_pipeline_create(vulkan_context* context, const vulkan_pipelin
         }
         depth_stencil.depthCompareOp = VK_COMPARE_OP_LESS;
         depth_stencil.depthBoundsTestEnable = VK_FALSE;
-        depth_stencil.stencilTestEnable = VK_FALSE;
+    }
+    depth_stencil.stencilTestEnable = (config->shader_flags & SHADER_FLAG_STENCIL_TEST) ? VK_TRUE : VK_FALSE;
+    if (config->shader_flags & SHADER_FLAG_STENCIL_TEST) {
+        // equivalent to glStencilFunc(func, ref, mask)
+        depth_stencil.back.compareOp = VK_COMPARE_OP_ALWAYS;
+        depth_stencil.back.reference = 1;
+        depth_stencil.back.compareMask = 0xFF;
+
+        // equivalent of glStencilOp(stencilFail, depthFail, depthPass)pipelin
+        depth_stencil.back.failOp = VK_STENCIL_OP_ZERO;
+        depth_stencil.back.depthFailOp = VK_STENCIL_OP_ZERO;
+        depth_stencil.back.passOp = VK_STENCIL_OP_REPLACE;
+        // equivalent of glStencilMask(mask)
+
+        // Back face
+        depth_stencil.back.writeMask = (config->shader_flags & SHADER_FLAG_STENCIL_WRITE) ? 0xFF : 0x00;
+
+        // Front face. Just use the same settings for front/back.
+        depth_stencil.front = depth_stencil.back;
     }
 
     VkPipelineColorBlendAttachmentState color_blend_attachment_state;
@@ -84,14 +123,25 @@ b8 vulkan_graphics_pipeline_create(vulkan_context* context, const vulkan_pipelin
     color_blend_state_create_info.pAttachments = &color_blend_attachment_state;
 
     // Dynamic state
-    const u32 dynamic_state_count = 3;
-    VkDynamicState dynamic_states[3] = {
-        VK_DYNAMIC_STATE_VIEWPORT,
-        VK_DYNAMIC_STATE_SCISSOR,
-        VK_DYNAMIC_STATE_LINE_WIDTH};
+    VkDynamicState* dynamic_states = darray_create(VkDynamicState);
+    darray_push(dynamic_states, VK_DYNAMIC_STATE_VIEWPORT);
+    darray_push(dynamic_states, VK_DYNAMIC_STATE_SCISSOR);
+    // Dynamic state, if supported.
+    if ((context->device.support_flags & VULKAN_DEVICE_SUPPORT_FLAG_NATIVE_DYNAMIC_STATE_BIT) || (context->device.support_flags & VULKAN_DEVICE_SUPPORT_FLAG_DYNAMIC_STATE_BIT)) {
+        darray_push(dynamic_states, VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY);
+        darray_push(dynamic_states, VK_DYNAMIC_STATE_FRONT_FACE);
+        darray_push(dynamic_states, VK_DYNAMIC_STATE_STENCIL_OP);
+        darray_push(dynamic_states, VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE_EXT);
+        darray_push(dynamic_states, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK);
+        darray_push(dynamic_states, VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK);
+        darray_push(dynamic_states, VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE);
+        darray_push(dynamic_states, VK_DYNAMIC_STATE_STENCIL_REFERENCE);
+        /* darray_push(dynamic_states, VK_DYNAMIC_STATE_COLOR_WRITE_ENABLE_EXT);
+        darray_push(dynamic_states, VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT); */
+    }
 
     VkPipelineDynamicStateCreateInfo dynamic_state_create_info = {VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
-    dynamic_state_create_info.dynamicStateCount = dynamic_state_count;
+    dynamic_state_create_info.dynamicStateCount = darray_length(dynamic_states);
     dynamic_state_create_info.pDynamicStates = dynamic_states;
 
     // Vertex input
@@ -109,13 +159,45 @@ b8 vulkan_graphics_pipeline_create(vulkan_context* context, const vulkan_pipelin
 
     // Input assembly
     VkPipelineInputAssemblyStateCreateInfo input_assembly = {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-    input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    // The pipeline being created already has available types, so just grab the first one.
+    for (u32 i = 1; i < PRIMITIVE_TOPOLOGY_TYPE_MAX; i = i << 1) {
+        if (out_pipeline->supported_topology_types & i) {
+            primitive_topology_type ptt = i;
+
+            switch (ptt) {
+                case PRIMITIVE_TOPOLOGY_TYPE_POINT_LIST:
+                    input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+                    break;
+                case PRIMITIVE_TOPOLOGY_TYPE_LINE_LIST:
+                    input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+                    break;
+                case PRIMITIVE_TOPOLOGY_TYPE_LINE_STRIP:
+                    input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;
+                    break;
+                case PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE_LIST:
+                    input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+                    break;
+                case PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE_STRIP:
+                    input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+                    break;
+                case PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE_FAN:
+                    input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN;
+                    break;
+                default:
+                    KWARN("primitive topology '%u' not supported. Skipping.", ptt);
+                    break;
+            }
+
+            break;
+        }
+    }
     input_assembly.primitiveRestartEnable = VK_FALSE;
 
     // Pipeline layout
     VkPipelineLayoutCreateInfo pipeline_layout_create_info = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
 
     // Push constants
+    VkPushConstantRange ranges[32];
     if (config->push_constant_range_count > 0) {
         if (config->push_constant_range_count > 32) {
             KERROR("vulkan_graphics_pipeline_create: cannot have more than 32 push constant ranges. Passed count: %i", config->push_constant_range_count);
@@ -123,7 +205,6 @@ b8 vulkan_graphics_pipeline_create(vulkan_context* context, const vulkan_pipelin
         }
 
         // NOTE: 32 is the max number of ranges we can ever have, since spec only guarantees 128 bytes with 4-byte alignment.
-        VkPushConstantRange ranges[32];
         kzero_memory(ranges, sizeof(VkPushConstantRange) * 32);
         for (u32 i = 0; i < config->push_constant_range_count; ++i) {
             ranges[i].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -148,6 +229,10 @@ b8 vulkan_graphics_pipeline_create(vulkan_context* context, const vulkan_pipelin
         context->allocator,
         &out_pipeline->pipeline_layout));
 
+    char pipeline_layout_name_buf[512] = {0};
+    string_format(pipeline_layout_name_buf, "pipeline_layout_shader_%s", config->name);
+    VK_SET_DEBUG_OBJECT_NAME(context, VK_OBJECT_TYPE_PIPELINE_LAYOUT, out_pipeline->pipeline_layout, pipeline_layout_name_buf);
+
     // Pipeline create
     VkGraphicsPipelineCreateInfo pipeline_create_info = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
     pipeline_create_info.stageCount = config->stage_count;
@@ -158,7 +243,7 @@ b8 vulkan_graphics_pipeline_create(vulkan_context* context, const vulkan_pipelin
     pipeline_create_info.pViewportState = &viewport_state;
     pipeline_create_info.pRasterizationState = &rasterizer_create_info;
     pipeline_create_info.pMultisampleState = &multisampling_create_info;
-    pipeline_create_info.pDepthStencilState = (config->shader_flags & SHADER_FLAG_DEPTH_TEST) ? &depth_stencil : 0;
+    pipeline_create_info.pDepthStencilState = ((config->shader_flags & SHADER_FLAG_DEPTH_TEST) || (config->shader_flags & SHADER_FLAG_STENCIL_TEST)) ? &depth_stencil : 0;
     pipeline_create_info.pColorBlendState = &color_blend_state_create_info;
     pipeline_create_info.pDynamicState = &dynamic_state_create_info;
     pipeline_create_info.pTessellationState = 0;
@@ -177,6 +262,13 @@ b8 vulkan_graphics_pipeline_create(vulkan_context* context, const vulkan_pipelin
         &pipeline_create_info,
         context->allocator,
         &out_pipeline->handle);
+
+    // Cleanup
+    darray_destroy(dynamic_states);
+
+    char pipeline_name_buf[512] = {0};
+    string_format(pipeline_name_buf, "pipeline_shader_%s", config->name);
+    VK_SET_DEBUG_OBJECT_NAME(context, VK_OBJECT_TYPE_PIPELINE, out_pipeline->handle, pipeline_name_buf);
 
     if (vulkan_result_is_success(result)) {
         KDEBUG("Graphics pipeline created!");

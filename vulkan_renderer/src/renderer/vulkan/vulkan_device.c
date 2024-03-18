@@ -1,8 +1,12 @@
 #include "vulkan_device.h"
-#include "core/logger.h"
-#include "core/kstring.h"
-#include "core/kmemory.h"
+
 #include "containers/darray.h"
+#include "core/kmemory.h"
+#include "core/kstring.h"
+#include "core/logger.h"
+#include "renderer/vulkan/vulkan_types.h"
+#include "vulkan/vulkan_core.h"
+#include "vulkan_utils.h"
 
 typedef struct vulkan_physical_device_requirements {
     b8 graphics;
@@ -16,14 +20,14 @@ typedef struct vulkan_physical_device_requirements {
 } vulkan_physical_device_requirements;
 
 typedef struct vulkan_physical_device_queue_family_info {
-    u32 graphics_family_index;
-    u32 present_family_index;
-    u32 compute_family_index;
-    u32 transfer_family_index;
+    i32 graphics_family_index;
+    i32 present_family_index;
+    i32 compute_family_index;
+    i32 transfer_family_index;
 } vulkan_physical_device_queue_family_info;
 
-b8 select_physical_device(vulkan_context* context);
-b8 physical_device_meets_requirements(
+static b8 select_physical_device(vulkan_context* context);
+static b8 physical_device_meets_requirements(
     VkPhysicalDevice device,
     VkSurfaceKHR surface,
     const VkPhysicalDeviceProperties* properties,
@@ -41,6 +45,7 @@ b8 vulkan_device_create(vulkan_context* context) {
     // NOTE: Do not create additional queues for shared indices.
     b8 present_shares_graphics_queue = context->device.graphics_queue_index == context->device.present_queue_index;
     b8 transfer_shares_graphics_queue = context->device.graphics_queue_index == context->device.transfer_queue_index;
+    b8 present_must_share_graphics = false;
     u32 index_count = 1;
     if (!present_shares_graphics_queue) {
         index_count++;
@@ -48,7 +53,7 @@ b8 vulkan_device_create(vulkan_context* context) {
     if (!transfer_shares_graphics_queue) {
         index_count++;
     }
-    u32 indices[32];
+    i32 indices[32];
     u8 index = 0;
     indices[index++] = context->device.graphics_queue_index;
     if (!present_shares_graphics_queue) {
@@ -59,10 +64,28 @@ b8 vulkan_device_create(vulkan_context* context) {
     }
 
     VkDeviceQueueCreateInfo queue_create_infos[32];
+    f32 queue_priorities[2] = {0.9f, 1.0f};
+
+    VkQueueFamilyProperties props[32];
+    u32 prop_count;
+    vkGetPhysicalDeviceQueueFamilyProperties(context->device.physical_device, &prop_count, 0);
+    vkGetPhysicalDeviceQueueFamilyProperties(context->device.physical_device, &prop_count, props);
+
     for (u32 i = 0; i < index_count; ++i) {
         queue_create_infos[i].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
         queue_create_infos[i].queueFamilyIndex = indices[i];
         queue_create_infos[i].queueCount = 1;
+
+        if (present_shares_graphics_queue && indices[i] == context->device.present_queue_index) {
+            if (props[context->device.present_queue_index].queueCount > 1) {
+                // If the same family is shared between graphic and presentation,
+                // pull from the second index instead of the first for a unique queue.
+                queue_create_infos[i].queueCount = 2;
+            } else {
+                // Don't have available queues, just share them.
+                present_must_share_graphics = true;
+            }
+        }
 
         // TODO: Enable this for a future enhancement.
         // if (indices[i] == context->device.graphics_queue_index) {
@@ -70,14 +93,8 @@ b8 vulkan_device_create(vulkan_context* context) {
         // }
         queue_create_infos[i].flags = 0;
         queue_create_infos[i].pNext = 0;
-        f32 queue_priority = 1.0f;
-        queue_create_infos[i].pQueuePriorities = &queue_priority;
+        queue_create_infos[i].pQueuePriorities = queue_priorities;
     }
-
-    // Request device features.
-    // TODO: should be config driven
-    VkPhysicalDeviceFeatures device_features = {};
-    device_features.samplerAnisotropy = VK_TRUE;  // Request anistrophy
 
     b8 portability_required = false;
     u32 available_extension_count = 0;
@@ -96,20 +113,76 @@ b8 vulkan_device_create(vulkan_context* context) {
     }
     kfree(available_extensions, sizeof(VkExtensionProperties) * available_extension_count, MEMORY_TAG_RENDERER);
 
-    u32 extension_count = portability_required ? 2 : 1;
-    const char** extension_names = portability_required
-                                       ? (const char* [2]){VK_KHR_SWAPCHAIN_EXTENSION_NAME, "VK_KHR_portability_subset"}
-                                       : (const char* [1]){VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    // Setup an array large enough to hold all, even if we don't use them all.
+    const char* extension_names[5];
+    u32 ext_idx = 0;
+    extension_names[ext_idx] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+    ext_idx++;
+
+    // Dynamic indexing. NOTE: not needed for 1.2+
+    /* extension_names[ext_idx] = VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME;
+    ext_idx++; */
+
+    // If portability is required (i.e. mac), add it.
+    if (portability_required) {
+        extension_names[ext_idx] = "VK_KHR_portability_subset";
+        ext_idx++;
+    }
+
+    // If dynamic topology isn't supported natively but *is* supported via extension,
+    // include the extension.
+    if (
+        ((context->device.support_flags & VULKAN_DEVICE_SUPPORT_FLAG_NATIVE_DYNAMIC_STATE_BIT) == 0) &&
+        ((context->device.support_flags & VULKAN_DEVICE_SUPPORT_FLAG_DYNAMIC_STATE_BIT) != 0)) {
+        extension_names[ext_idx] = VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME;
+        ext_idx++;
+    }
+    // If smooth lines are supported, load the extension.
+    if ((context->device.support_flags & VULKAN_DEVICE_SUPPORT_FLAG_LINE_SMOOTH_RASTERISATION_BIT)) {
+        extension_names[ext_idx] = VK_EXT_LINE_RASTERIZATION_EXTENSION_NAME;
+        ext_idx++;
+    }
+
+    // Request supported device features.
+    VkPhysicalDeviceFeatures device_features = {};
+    device_features.samplerAnisotropy = context->device.features.samplerAnisotropy;  // Request anistrophy
+    device_features.fillModeNonSolid = context->device.features.fillModeNonSolid;
+
+    // VK_EXT_descriptor_indexing
+    VkPhysicalDeviceDescriptorIndexingFeatures descriptor_indexing_features = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES_EXT};
+    // Partial binding is required for descriptor aliasing.
+    descriptor_indexing_features.descriptorBindingPartiallyBound = VK_TRUE;  // TODO: Check if supported?
+
+#if defined(VK_USE_PLATFORM_MACOS_MVK)
+    // NOTE: On macOS set environment variable to configure MoltenVK for using Metal argument buffers (needed for descriptor indexing).
+    //     - MoltenVK supports Metal argument buffers on macOS, iOS possible in future (see https://github.com/KhronosGroup/MoltenVK/issues/1651)
+    setenv("MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS", "1", 1);
+#endif
+
+    // VK_EXT_extended_dynamic_state
+    VkPhysicalDeviceExtendedDynamicStateFeaturesEXT extended_dynamic_state = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT};
+    extended_dynamic_state.extendedDynamicState = VK_TRUE;
+    descriptor_indexing_features.pNext = &extended_dynamic_state;
+
+    // Smooth line rasterisation, if supported.
+    VkPhysicalDeviceLineRasterizationFeaturesEXT line_rasterization_ext = {0};
+    if (context->device.support_flags & VULKAN_DEVICE_SUPPORT_FLAG_LINE_SMOOTH_RASTERISATION_BIT) {
+        line_rasterization_ext.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LINE_RASTERIZATION_FEATURES_EXT;
+        line_rasterization_ext.smoothLines = VK_TRUE;
+        extended_dynamic_state.pNext = &line_rasterization_ext;
+    }
+
     VkDeviceCreateInfo device_create_info = {VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     device_create_info.queueCreateInfoCount = index_count;
     device_create_info.pQueueCreateInfos = queue_create_infos;
     device_create_info.pEnabledFeatures = &device_features;
-    device_create_info.enabledExtensionCount = extension_count;
+    device_create_info.enabledExtensionCount = ext_idx;
     device_create_info.ppEnabledExtensionNames = extension_names;
 
     // Deprecated and ignored, so pass nothing.
     device_create_info.enabledLayerCount = 0;
     device_create_info.ppEnabledLayerNames = 0;
+    device_create_info.pNext = &descriptor_indexing_features;
 
     // Create the device.
     VK_CHECK(vkCreateDevice(
@@ -118,7 +191,33 @@ b8 vulkan_device_create(vulkan_context* context) {
         context->allocator,
         &context->device.logical_device));
 
+    VK_SET_DEBUG_OBJECT_NAME(context, VK_OBJECT_TYPE_DEVICE, context->device.logical_device, "Vulkan Logical Device");
+
     KINFO("Logical device created.");
+
+    // Examine dynamic state support and load function pointer if need be.
+    if (
+        !(context->device.support_flags & VULKAN_DEVICE_SUPPORT_FLAG_NATIVE_DYNAMIC_STATE_BIT) &&
+        (context->device.support_flags & VULKAN_DEVICE_SUPPORT_FLAG_DYNAMIC_STATE_BIT)) {
+        KINFO("Vulkan device doesn't support native dynamic state, but does via extension. Using extension.");
+
+        // Dynamic primitive topology.
+        context->vkCmdSetPrimitiveTopologyEXT = (PFN_vkCmdSetPrimitiveTopologyEXT)vkGetInstanceProcAddr(context->instance, "vkCmdSetPrimitiveTopologyEXT");
+
+        // Dynamic front-cace
+        context->vkCmdSetFrontFaceEXT = (PFN_vkCmdSetFrontFaceEXT)vkGetInstanceProcAddr(context->instance, "vkCmdSetFrontFaceEXT");
+
+        // Dynamic depth/stencil state
+        context->vkCmdSetStencilOpEXT = (PFN_vkCmdSetStencilOpEXT)vkGetInstanceProcAddr(context->instance, "vkCmdSetStencilOpEXT");
+        context->vkCmdSetStencilTestEnableEXT = (PFN_vkCmdSetStencilTestEnableEXT)vkGetInstanceProcAddr(context->instance, "vkCmdSetStencilTestEnableEXT");
+        context->vkCmdSetDepthTestEnableEXT = (PFN_vkCmdSetDepthTestEnableEXT)vkGetInstanceProcAddr(context->instance, "vkCmdSetDepthTestEnableEXT");
+    } else {
+        if (context->device.support_flags & VULKAN_DEVICE_SUPPORT_FLAG_NATIVE_DYNAMIC_STATE_BIT) {
+            KINFO("Vulkan device supports native dynamic state.");
+        } else {
+            KWARN("Vulkan device does not support native or extension dynamic state. This may cause issues with the renderer.");
+        }
+    }
 
     // Get queues.
     vkGetDeviceQueue(
@@ -130,7 +229,10 @@ b8 vulkan_device_create(vulkan_context* context) {
     vkGetDeviceQueue(
         context->device.logical_device,
         context->device.present_queue_index,
-        0,
+        // If the same family is shared between graphic and presentation,
+        // pull from the second index instead of the first for a unique queue.
+        present_must_share_graphics ? 0 : (context->device.graphics_queue_index == context->device.present_queue_index) ? 1
+                                                                                                                        : 0,
         &context->device.present_queue);
 
     vkGetDeviceQueue(
@@ -252,14 +354,12 @@ void vulkan_device_query_swapchain_support(
 
 b8 vulkan_device_detect_depth_format(vulkan_device* device) {
     // Format candidates
-    const u64 candidate_count = 3;
-    VkFormat candidates[3] = {
-        VK_FORMAT_D32_SFLOAT,
+    const u64 candidate_count = 2;
+    VkFormat candidates[2] = {
         VK_FORMAT_D32_SFLOAT_S8_UINT,
         VK_FORMAT_D24_UNORM_S8_UINT};
 
-    u8 sizes[3] = {
-        4,
+    u8 sizes[2] = {
         4,
         3};
 
@@ -282,7 +382,7 @@ b8 vulkan_device_detect_depth_format(vulkan_device* device) {
     return false;
 }
 
-b8 select_physical_device(vulkan_context* context) {
+static b8 select_physical_device(vulkan_context* context) {
     u32 physical_device_count = 0;
     VK_CHECK(vkEnumeratePhysicalDevices(context->instance, &physical_device_count, 0));
     if (physical_device_count == 0) {
@@ -312,11 +412,24 @@ b8 select_physical_device(vulkan_context* context) {
     VkPhysicalDevice physical_devices[32];
     VK_CHECK(vkEnumeratePhysicalDevices(context->instance, &physical_device_count, physical_devices));
     for (u32 i = 0; i < physical_device_count; ++i) {
-        VkPhysicalDeviceProperties properties;
-        vkGetPhysicalDeviceProperties(physical_devices[i], &properties);
+        VkPhysicalDeviceProperties2 properties2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+        VkPhysicalDeviceDriverProperties driverProperties = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+        properties2.pNext = &driverProperties;
+        vkGetPhysicalDeviceProperties2(physical_devices[i], &properties2);
+        VkPhysicalDeviceProperties properties = properties2.properties;
 
         VkPhysicalDeviceFeatures features;
         vkGetPhysicalDeviceFeatures(physical_devices[i], &features);
+
+        VkPhysicalDeviceFeatures2 features2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+        // Check for dynamic topology support via extension.
+        VkPhysicalDeviceExtendedDynamicStateFeaturesEXT dynamic_state_next = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT};
+        features2.pNext = &dynamic_state_next;
+        // Check for smooth line rasterisation support via extension.
+        VkPhysicalDeviceLineRasterizationFeaturesEXT smooth_line_next = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LINE_RASTERIZATION_FEATURES_EXT};
+        dynamic_state_next.pNext = &smooth_line_next;
+        // Perform the query.
+        vkGetPhysicalDeviceFeatures2(physical_devices[i], &features2);
 
         VkPhysicalDeviceMemoryProperties memory;
         vkGetPhysicalDeviceMemoryProperties(physical_devices[i], &memory);
@@ -367,18 +480,19 @@ b8 select_physical_device(vulkan_context* context) {
                     break;
             }
 
-            KINFO(
-                "GPU Driver version: %d.%d.%d",
-                VK_VERSION_MAJOR(properties.driverVersion),
-                VK_VERSION_MINOR(properties.driverVersion),
-                VK_VERSION_PATCH(properties.driverVersion));
+            KINFO("GPU Driver version: %s", driverProperties.driverInfo);
+
+            // Save off the device-supported API version.
+            context->device.api_major = VK_VERSION_MAJOR(properties.apiVersion);
+            context->device.api_minor = VK_VERSION_MINOR(properties.apiVersion);
+            context->device.api_patch = VK_VERSION_PATCH(properties.apiVersion);
 
             // Vulkan API version.
             KINFO(
                 "Vulkan API version: %d.%d.%d",
-                VK_VERSION_MAJOR(properties.apiVersion),
-                VK_VERSION_MINOR(properties.apiVersion),
-                VK_VERSION_PATCH(properties.apiVersion));
+                context->device.api_major,
+                context->device.api_minor,
+                context->device.api_minor);
 
             // Memory information
             for (u32 j = 0; j < memory.memoryHeapCount; ++j) {
@@ -401,6 +515,19 @@ b8 select_physical_device(vulkan_context* context) {
             context->device.features = features;
             context->device.memory = memory;
             context->device.supports_device_local_host_visible = supports_device_local_host_visible;
+
+            // The device may or may not support dynamic state, so save that here.
+            if (context->device.api_major >= 1 && context->device.api_minor > 2) {
+                context->device.support_flags |= VULKAN_DEVICE_SUPPORT_FLAG_NATIVE_DYNAMIC_STATE_BIT;
+            }
+            // If not supported natively, it might be supported via extension.
+            if (dynamic_state_next.extendedDynamicState) {
+                context->device.support_flags |= VULKAN_DEVICE_SUPPORT_FLAG_DYNAMIC_STATE_BIT;
+            }
+            // Check for smooth line rasterization support.
+            if (smooth_line_next.smoothLines) {
+                context->device.support_flags |= VULKAN_DEVICE_SUPPORT_FLAG_LINE_SMOOTH_RASTERISATION_BIT;
+            }
             break;
         }
     }
@@ -418,7 +545,7 @@ b8 select_physical_device(vulkan_context* context) {
     return true;
 }
 
-b8 physical_device_meets_requirements(
+static b8 physical_device_meets_requirements(
     VkPhysicalDevice device,
     VkSurfaceKHR surface,
     const VkPhysicalDeviceProperties* properties,

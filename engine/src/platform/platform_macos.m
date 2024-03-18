@@ -51,6 +51,7 @@ typedef struct platform_state {
     u8  modifier_key_states;
     // darray
     macos_file_watch *watches;
+    f32 device_pixel_ratio;
 } platform_state;
 
 enum macos_modifier_keys {
@@ -67,10 +68,10 @@ enum macos_modifier_keys {
 static platform_state* state_ptr;
 
 // Key translation
-keys translate_keycode(u32 ns_keycode);
+static keys translate_keycode(u32 ns_keycode);
 // Modifier key handling
-void handle_modifier_keys(u32 ns_keycode, u32 modifier_flags);
-void platform_update_watches();
+static void handle_modifier_keys(u32 ns_keycode, u32 modifier_flags);
+static void platform_update_watches(void);
 
 @interface WindowDelegate : NSObject <NSWindowDelegate> {
     platform_state* state;
@@ -272,12 +273,28 @@ static const NSRange kEmptyRange = { NSNotFound, 0 };
     return YES;
 }
 
+- (void)windowDidChangeScreen:(NSNotification *)notification {
+    event_context context;
+    CGSize viewSize = state_ptr->view.bounds.size;
+    NSSize newDrawableSize = [state_ptr->view convertSizeToBacking:viewSize];
+    state_ptr->handle.layer.drawableSize = newDrawableSize;
+    state_ptr->handle.layer.contentsScale = state_ptr->view.window.backingScaleFactor;
+    // Save off the device pixel ratio.
+    state_ptr->device_pixel_ratio = state_ptr->handle.layer.contentsScale;
+
+    context.data.u16[0] = (u16)newDrawableSize.width;
+    context.data.u16[1] = (u16)newDrawableSize.height;
+    event_fire(EVENT_CODE_RESIZED, 0, context);
+}
+
 - (void)windowDidResize:(NSNotification *)notification {
     event_context context;
     CGSize viewSize = state_ptr->view.bounds.size;
     NSSize newDrawableSize = [state_ptr->view convertSizeToBacking:viewSize];
     state_ptr->handle.layer.drawableSize = newDrawableSize;
     state_ptr->handle.layer.contentsScale = state_ptr->view.window.backingScaleFactor;
+    // Save off the device pixel ratio.
+    state_ptr->device_pixel_ratio = state_ptr->handle.layer.contentsScale;
 
     context.data.u16[0] = (u16)newDrawableSize.width;
     context.data.u16[1] = (u16)newDrawableSize.height;
@@ -300,6 +317,8 @@ static const NSRange kEmptyRange = { NSNotFound, 0 };
     NSSize newDrawableSize = [state_ptr->view convertSizeToBacking:viewSize];
     state_ptr->handle.layer.drawableSize = newDrawableSize;
     state_ptr->handle.layer.contentsScale = state_ptr->view.window.backingScaleFactor;
+    // Save off the device pixel ratio.
+    state_ptr->device_pixel_ratio = state_ptr->handle.layer.contentsScale;
 
     context.data.u16[0] = (u16)newDrawableSize.width;
     context.data.u16[1] = (u16)newDrawableSize.height;
@@ -318,6 +337,8 @@ b8 platform_system_startup(u64* memory_requirement, void* state, void* config) {
     }
 
     state_ptr = state;
+
+    state_ptr->device_pixel_ratio = 1.0f;
 
     @autoreleasepool {
 
@@ -391,6 +412,8 @@ b8 platform_system_startup(u64* memory_requirement, void* state, void* config) {
     // See also https://github.com/KhronosGroup/MoltenVK/issues/428
     state_ptr->handle.layer.contentsScale = state_ptr->view.window.backingScaleFactor;
     KDEBUG("contentScale: %f", state_ptr->handle.layer.contentsScale);
+    // Save off the device pixel ratio.
+    state_ptr->device_pixel_ratio = state_ptr->handle.layer.contentsScale;
 
     [state_ptr->view setLayer:state_ptr->handle.layer];
 
@@ -435,7 +458,7 @@ void platform_system_shutdown(void* platform_state) {
     state_ptr = 0;
 }
 
-b8 platform_pump_messages(platform_state *plat_state) {
+b8 platform_pump_messages(void) {
     if (state_ptr) {
         @autoreleasepool {
 
@@ -495,7 +518,7 @@ void platform_console_write_error(const char *message, u8 colour) {
     printf("\033[%sm%s\033[0m", colour_strings[colour], message);
 }
 
-f64 platform_get_absolute_time() {
+f64 platform_get_absolute_time(void) {
     mach_timebase_info_data_t clock_timebase;
     mach_timebase_info(&clock_timebase);
 
@@ -519,7 +542,7 @@ void platform_sleep(u64 ms) {
 #endif
 }
 
-i32 platform_get_processor_count() {
+i32 platform_get_processor_count(void) {
     return [[NSProcessInfo processInfo] processorCount];
 }
 
@@ -531,6 +554,10 @@ void platform_get_handle_info(u64 *out_size, void *memory) {
     }
 
     kcopy_memory(memory, &state_ptr->handle, *out_size);
+}
+
+f32 platform_device_pixel_ratio(void) {
+    return state_ptr->device_pixel_ratio;
 }
 
 // NOTE: Begin threads.
@@ -635,7 +662,7 @@ void kthread_sleep(kthread* thread, u64 ms) {
     platform_sleep(ms);
 }
 
-u64 get_thread_id() {
+u64 platform_current_thread_id(void) {
     return (u64)pthread_self();
 }
 // NOTE: End threads.
@@ -648,8 +675,11 @@ b8 kmutex_create(kmutex* out_mutex) {
     }
 
     // Initialize
+    pthread_mutexattr_t mutex_attr;
+    pthread_mutexattr_init(&mutex_attr);
+    pthread_mutexattr_settype(&mutex_attr, PTHREAD_MUTEX_RECURSIVE);
     pthread_mutex_t mutex;
-    i32 result = pthread_mutex_init(&mutex, 0);
+    i32 result = pthread_mutex_init(&mutex, &mutex_attr);
     if (result != 0) {
         KERROR("Mutex creation failure!");
         return false;
@@ -740,11 +770,11 @@ b8 kmutex_unlock(kmutex* mutex) {
 }
 // NOTE: End mutexes
 
-const char *platform_dynamic_library_extension() {
+const char *platform_dynamic_library_extension(void) {
     return ".dylib";
 }
 
-const char *platform_dynamic_library_prefix() {
+const char *platform_dynamic_library_prefix(void) {
     return "lib";
 }
 
@@ -841,7 +871,7 @@ b8 platform_unwatch_file(u32 watch_id) {
     return unregister_watch(watch_id);
 }
 
-void platform_update_watches() {
+static void platform_update_watches(void) {
     if (!state_ptr || !state_ptr->watches) {
         return;
     }
@@ -882,9 +912,7 @@ void platform_update_watches() {
     }
 }
 
-
-
-keys translate_keycode(u32 ns_keycode) {
+static keys translate_keycode(u32 ns_keycode) {
     // https://boredzo.org/blog/wp-content/uploads/2007/05/IMTx-virtual-keycodes.pdf
     // https://learn.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes
     switch (ns_keycode) {
@@ -1132,7 +1160,7 @@ keys translate_keycode(u32 ns_keycode) {
 #define MACOS_LALT_MASK (1 << 5)
 #define MACOS_RALT_MASK (1 << 6)
 
-void handle_modifier_key(
+static void handle_modifier_key(
     u32 ns_keycode, 
     u32 ns_key_mask, 
     u32 ns_l_keycode, 
@@ -1181,7 +1209,7 @@ void handle_modifier_key(
     }
 }
 
-void handle_modifier_keys(u32 ns_keycode, u32 modifier_flags) {
+static void handle_modifier_keys(u32 ns_keycode, u32 modifier_flags) {
     // Shift
     handle_modifier_key(
         ns_keycode, 
@@ -1254,4 +1282,4 @@ void handle_modifier_keys(u32 ns_keycode, u32 modifier_flags) {
     }
 }
 
-#endif // SLN_PLATFORM_MACOS
+#endif

@@ -1,8 +1,8 @@
 #include "camera_system.h"
 
-#include "core/logger.h"
-#include "core/kstring.h"
 #include "containers/hashtable.h"
+#include "core/kstring.h"
+#include "core/logger.h"
 #include "renderer/camera.h"
 
 typedef struct camera_lookup {
@@ -100,7 +100,7 @@ camera* camera_system_acquire(const char* name) {
         if (id == INVALID_ID_U16) {
             // Find free slot
             for (u16 i = 0; i < state_ptr->config.max_camera_count; ++i) {
-                if (i == INVALID_ID_U16) {
+                if (state_ptr->cameras[i].id == INVALID_ID_U16) {
                     id = i;
                     break;
                 }
@@ -111,7 +111,7 @@ camera* camera_system_acquire(const char* name) {
             }
 
             // Create/register the new camera.
-            KTRACE("Creating new camera named '%s'...");
+            KTRACE("Creating new camera named '%s'...", name);
             state_ptr->cameras[id].c = camera_create();
             state_ptr->cameras[id].id = id;
 
@@ -149,7 +149,7 @@ void camera_system_release(const char* name) {
     }
 }
 
-camera* camera_system_get_default() {
+camera* camera_system_get_default(void) {
     if (state_ptr) {
         return &state_ptr->default_camera;
     }

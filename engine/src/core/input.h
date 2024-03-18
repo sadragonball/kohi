@@ -15,6 +15,7 @@
 #include "defines.h"
 
 struct keymap;
+struct frame_data;
 
 /**
  * @brief Represents available mouse buttons.
@@ -326,12 +327,18 @@ void input_system_shutdown(void* state);
 
 /**
  * @brief Updates the input system every frame.
- * @param delta_time The delta time in seconds since the last frame.
- * TODO(travis): refactor to use system manager update, with state, but must be called at end of frame.
+ * @param p_frame_data A constant pointer to the current frame's data.
+ * NOTE: Does not use system manager update because it must be called at end of a frame.
  */
-void input_update(f64 delta_time);
+void input_update(const struct frame_data* p_frame_data);
 
 // keyboard input
+
+/**
+ * @brief Enables/disables keyboard key repeats.
+ * @param enable Indicates if key repeats should be enabled.
+ */
+KAPI void input_key_repeats_enable(b8 enable);
 
 /**
  * @brief Indicates if the given key is currently pressed down.
@@ -399,6 +406,15 @@ KAPI b8 input_was_button_down(buttons button);
 KAPI b8 input_was_button_up(buttons button);
 
 /**
+ * @brief Indicates if the mouse is currently being dragged with the provided button
+ * being held down.
+ *
+ * @param button The button to check.
+ * @returns True if dragging; otherwise false.
+ */
+KAPI b8 input_is_button_dragging(buttons button);
+
+/**
  * @brief Obtains the current mouse position.
  * @param x A pointer to hold the current mouse position on the x-axis.
  * @param y A pointer to hold the current mouse position on the y-axis.
@@ -439,6 +455,17 @@ void input_process_mouse_wheel(i8 z_delta);
  */
 KAPI const char* input_keycode_str(keys key);
 
+/**
+ * @brief Pushes a new keymap onto the keymap stack, making it the active keymap.
+ * A copy of the keymap is taken when pushing onto the stack.
+ *
+ * @param map A constant pointer to the keymap to be pushed.
+ */
 KAPI void input_keymap_push(const struct keymap* map);
 
-KAPI b8 input_keymap_pop();
+/**
+ * @brief Attempts to pop the top-most keymap from the stack, if there is one.
+ *
+ * @return True if a keymap was popped; otherwise false.
+ */
+KAPI b8 input_keymap_pop(void);

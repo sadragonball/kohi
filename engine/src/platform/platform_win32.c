@@ -1,23 +1,22 @@
+#include "core/ksemaphore.h"
 #include "platform/platform.h"
 
 // Windows platform layer.
 #if KPLATFORM_WINDOWS
 
-#include "core/logger.h"
-#include "core/input.h"
+#include "containers/darray.h"
 #include "core/event.h"
-#include "core/kthread.h"
-#include "core/kmutex.h"
+#include "core/input.h"
 #include "core/kmemory.h"
+#include "core/kmutex.h"
 #include "core/kstring.h"
-#include "containers/darray.h"
-
-#include "containers/darray.h"
+#include "core/kthread.h"
+#include "core/logger.h"
 
 #define WIN32_LEAN_AND_MEAN
+#include <stdlib.h>
 #include <windows.h>
 #include <windowsx.h>  // param input extraction
-#include <stdlib.h>
 
 typedef struct win32_handle_info {
     HINSTANCE h_instance;
@@ -36,6 +35,7 @@ typedef struct platform_state {
     CONSOLE_SCREEN_BUFFER_INFO err_output_csbi;
     // darray
     win32_file_watch *watches;
+    f32 device_pixel_ratio;
 } platform_state;
 
 static platform_state *state_ptr;
@@ -44,10 +44,10 @@ static platform_state *state_ptr;
 static f64 clock_frequency;
 static LARGE_INTEGER start_time;
 
-void platform_update_watches();
+static void platform_update_watches(void);
 LRESULT CALLBACK win32_process_message(HWND hwnd, u32 msg, WPARAM w_param, LPARAM l_param);
 
-void clock_setup() {
+void clock_setup(void) {
     LARGE_INTEGER frequency;
     QueryPerformanceFrequency(&frequency);
     clock_frequency = 1.0 / (f64)frequency.QuadPart;
@@ -65,6 +65,12 @@ b8 platform_system_startup(u64 *memory_requirement, void *state, void *config) {
 
     GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &state_ptr->std_output_csbi);
     GetConsoleScreenBufferInfo(GetStdHandle(STD_ERROR_HANDLE), &state_ptr->err_output_csbi);
+
+    // Only available in the Creators update for Windows 10+.
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    // NOTE: Older versions of windows might have to use this:
+    // SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE);
+    state_ptr->device_pixel_ratio = 1.0f;
 
     // Setup and register window class.
     HICON icon = LoadIcon(state_ptr->handle.h_instance, IDI_APPLICATION);
@@ -149,7 +155,7 @@ void platform_system_shutdown(void *plat_state) {
     }
 }
 
-b8 platform_pump_messages() {
+b8 platform_pump_messages(void) {
     if (state_ptr) {
         MSG message;
         while (PeekMessageA(&message, NULL, 0, 0, PM_REMOVE)) {
@@ -185,6 +191,14 @@ void *platform_set_memory(void *dest, i32 value, u64 size) {
 
 void platform_console_write(const char *message, u8 colour) {
     HANDLE console_handle = GetStdHandle(STD_OUTPUT_HANDLE);
+
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    if (state_ptr) {
+        csbi = state_ptr->std_output_csbi;
+    } else {
+        GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi);
+    }
+
     // FATAL,ERROR,WARN,INFO,DEBUG,TRACE
     static u8 levels[6] = {64, 4, 6, 2, 1, 8};
     SetConsoleTextAttribute(console_handle, levels[colour]);
@@ -193,17 +207,18 @@ void platform_console_write(const char *message, u8 colour) {
     DWORD number_written = 0;
     WriteConsoleA(GetStdHandle(STD_OUTPUT_HANDLE), message, (DWORD)length, &number_written, 0);
 
-    CONSOLE_SCREEN_BUFFER_INFO csbi;
-    if (state_ptr) {
-        csbi = state_ptr->std_output_csbi;
-    } else {
-        GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi);
-    }
     SetConsoleTextAttribute(console_handle, csbi.wAttributes);
 }
 
 void platform_console_write_error(const char *message, u8 colour) {
     HANDLE console_handle = GetStdHandle(STD_ERROR_HANDLE);
+
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    if (state_ptr) {
+        csbi = state_ptr->err_output_csbi;
+    } else {
+        GetConsoleScreenBufferInfo(GetStdHandle(STD_ERROR_HANDLE), &csbi);
+    }
 
     // FATAL,ERROR,WARN,INFO,DEBUG,TRACE
     static u8 levels[6] = {64, 4, 6, 2, 1, 8};
@@ -213,16 +228,10 @@ void platform_console_write_error(const char *message, u8 colour) {
     DWORD number_written = 0;
     WriteConsoleA(GetStdHandle(STD_ERROR_HANDLE), message, (DWORD)length, &number_written, 0);
 
-    CONSOLE_SCREEN_BUFFER_INFO csbi;
-    if (state_ptr) {
-        csbi = state_ptr->err_output_csbi;
-    } else {
-        GetConsoleScreenBufferInfo(GetStdHandle(STD_ERROR_HANDLE), &csbi);
-    }
     SetConsoleTextAttribute(console_handle, csbi.wAttributes);
 }
 
-f64 platform_get_absolute_time() {
+f64 platform_get_absolute_time(void) {
     if (!clock_frequency) {
         clock_setup();
     }
@@ -236,7 +245,7 @@ void platform_sleep(u64 ms) {
     Sleep(ms);
 }
 
-i32 platform_get_processor_count() {
+i32 platform_get_processor_count(void) {
     SYSTEM_INFO sysinfo;
     GetSystemInfo(&sysinfo);
     KINFO("%i processor cores detected.", sysinfo.dwNumberOfProcessors);
@@ -250,6 +259,10 @@ void platform_get_handle_info(u64 *out_size, void *memory) {
     }
 
     kcopy_memory(memory, &state_ptr->handle, *out_size);
+}
+
+f32 platform_device_pixel_ratio(void) {
+    return state_ptr->device_pixel_ratio;
 }
 
 // NOTE: Begin threads
@@ -302,6 +315,28 @@ void kthread_cancel(kthread *thread) {
     }
 }
 
+b8 kthread_wait(kthread *thread) {
+    if (thread && thread->internal_data) {
+        DWORD exit_code = WaitForSingleObject(thread->internal_data, INFINITE);
+        if (exit_code == WAIT_OBJECT_0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+b8 kthread_wait_timeout(kthread *thread, u64 wait_ms) {
+    if (thread && thread->internal_data) {
+        DWORD exit_code = WaitForSingleObject(thread->internal_data, wait_ms);
+        if (exit_code == WAIT_OBJECT_0) {
+            return true;
+        } else if (exit_code == WAIT_TIMEOUT) {
+            return false;
+        }
+    }
+    return false;
+}
+
 b8 kthread_is_active(kthread *thread) {
     if (thread && thread->internal_data) {
         DWORD exit_code = WaitForSingleObject(thread->internal_data, 0);
@@ -316,7 +351,7 @@ void kthread_sleep(kthread *thread, u64 ms) {
     platform_sleep(ms);
 }
 
-u64 get_thread_id() {
+u64 platform_current_thread_id(void) {
     return (u64)GetCurrentThreadId();
 }
 
@@ -376,6 +411,69 @@ b8 kmutex_unlock(kmutex *mutex) {
 }
 
 // NOTE: End mutexes.
+
+b8 ksemaphore_create(ksemaphore *out_semaphore, u32 max_count, u32 start_count) {
+    if (!out_semaphore) {
+        return false;
+    }
+
+    out_semaphore->internal_data = CreateSemaphore(0, start_count, max_count, "semaphore");
+
+    return true;
+}
+
+void ksemaphore_destroy(ksemaphore *semaphore) {
+    if (semaphore && semaphore->internal_data) {
+        CloseHandle(semaphore->internal_data);
+        KTRACE("Destroyed semaphore handle.");
+        semaphore->internal_data = 0;
+    }
+}
+
+b8 ksemaphore_signal(ksemaphore *semaphore) {
+    if (!semaphore || !semaphore->internal_data) {
+        return false;
+    }
+    // W: release/Increment
+    LONG previous_count = 0;
+    // NOTE: release 1 at a time.
+    if (!ReleaseSemaphore(semaphore->internal_data, 1, &previous_count)) {
+        KERROR("Failed to release semaphore.");
+        return false;
+    }
+    return true;
+    // L: post/Increment
+}
+
+b8 ksemaphore_wait(ksemaphore *semaphore, u64 timeout_ms) {
+    if (!semaphore || !semaphore->internal_data) {
+        return false;
+    }
+
+    DWORD result = WaitForSingleObject(semaphore->internal_data, timeout_ms);
+    switch (result) {
+        case WAIT_ABANDONED:
+            KERROR("The specified object is a mutex object that was not released by the thread that owned the mutex object before the owning thread terminated. Ownership of the mutex object is granted to the calling thread and the mutex state is set to nonsignaled. If the mutex was protecting persistent state information, you should check it for consistency.");
+            return false;
+        case WAIT_OBJECT_0:
+            // The state is signaled.
+            return true;
+        case WAIT_TIMEOUT:
+            KERROR("Semaphore wait timeout occurred.");
+            return false;
+        case WAIT_FAILED:
+            KERROR("WaitForSingleObject failed.");
+            // TODO: GetLastError and print message.
+            return false;
+        default:
+            KERROR("An unknown error occurred while waiting on a semaphore.");
+            // TODO: GetLastError and print message.
+            return false;
+    }
+    // W: wait/decrement, blocks when 0
+    // L: wait/decrement, blocks when 0
+    return true;
+}
 
 b8 platform_dynamic_library_load(const char *name, dynamic_library *out_library) {
     if (!out_library) {
@@ -472,11 +570,11 @@ b8 platform_dynamic_library_load_function(const char *name, dynamic_library *lib
     return true;
 }
 
-const char *platform_dynamic_library_extension() {
+const char *platform_dynamic_library_extension(void) {
     return ".dll";
 }
 
-const char *platform_dynamic_library_prefix() {
+const char *platform_dynamic_library_prefix(void) {
     return "";
 }
 
@@ -570,7 +668,7 @@ b8 platform_unwatch_file(u32 watch_id) {
     return unregister_watch(watch_id);
 }
 
-void platform_update_watches() {
+static void platform_update_watches(void) {
     if (!state_ptr || !state_ptr->watches) {
         return;
     }
@@ -620,12 +718,33 @@ LRESULT CALLBACK win32_process_message(HWND hwnd, u32 msg, WPARAM w_param, LPARA
         case WM_DESTROY:
             PostQuitMessage(0);
             return 0;
+        case WM_DPICHANGED:
+            // x- and y-axis DPI are always the same, so just grab one.
+            i32 x_dpi = GET_X_LPARAM(w_param);
+
+            // Store off the device pixel ratio.
+            state_ptr->device_pixel_ratio = (f32)x_dpi / USER_DEFAULT_SCREEN_DPI;
+            KINFO("Display device pixel ratio is: %.2f", state_ptr->device_pixel_ratio);
+
+            return 0;
         case WM_SIZE: {
             // Get the updated size.
             RECT r;
             GetClientRect(hwnd, &r);
             u32 width = r.right - r.left;
             u32 height = r.bottom - r.top;
+
+            {
+                HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+
+                MONITORINFO monitor_info = {0};
+                monitor_info.cbSize = sizeof(MONITORINFO);
+                if (!GetMonitorInfoA(monitor, &monitor_info)) {
+                    KWARN("Failed to get monitor info. ");
+                }
+
+                KINFO("monitor: %u", monitor_info.rcMonitor.left);
+            }
 
             // Fire the event. The application layer should pick this up, but not handle it
             // as it shouldn be visible to other parts of the application.
@@ -655,6 +774,11 @@ LRESULT CALLBACK win32_process_message(HWND hwnd, u32 msg, WPARAM w_param, LPARA
                 key = scancode == left_shift ? KEY_LSHIFT : KEY_RSHIFT;
             } else if (w_param == VK_CONTROL) {
                 key = is_extended ? KEY_RCONTROL : KEY_LCONTROL;
+            }
+
+            // HACK: This is gross windows keybind crap.
+            if (key == VK_OEM_1) {
+                key = KEY_SEMICOLON;
             }
 
             // Pass to the input subsystem for processing.

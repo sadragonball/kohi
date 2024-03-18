@@ -1,12 +1,11 @@
 #include "geometry_system.h"
 
-#include "core/logger.h"
 #include "core/kmemory.h"
 #include "core/kstring.h"
+#include "core/logger.h"
 #include "math/geometry_utils.h"
-#include "systems/material_system.h"
 #include "renderer/renderer_frontend.h"
-#include "math/geometry_utils.h"
+#include "systems/material_system.h"
 
 typedef struct geometry_reference {
     u64 reference_count;
@@ -18,7 +17,6 @@ typedef struct geometry_system_state {
     geometry_system_config config;
 
     geometry default_geometry;
-    geometry default_2d_geometry;
 
     // Array of registered meshes.
     geometry_reference* registered_geometries;
@@ -26,9 +24,9 @@ typedef struct geometry_system_state {
 
 static geometry_system_state* state_ptr = 0;
 
-b8 create_default_geometries(geometry_system_state* state);
-b8 create_geometry(geometry_system_state* state, geometry_config config, geometry* g);
-void destroy_geometry(geometry_system_state* state, geometry* g);
+static b8 create_default_geometries(geometry_system_state* state);
+static b8 create_geometry(geometry_system_state* state, geometry_config config, geometry* g);
+static void destroy_geometry(geometry_system_state* state, geometry* g);
 
 b8 geometry_system_initialize(u64* memory_requirement, void* state, void* config) {
     geometry_system_config* typed_config = (geometry_system_config*)config;
@@ -57,7 +55,6 @@ b8 geometry_system_initialize(u64* memory_requirement, void* state, void* config
     u32 count = state_ptr->config.max_geometry_count;
     for (u32 i = 0; i < count; ++i) {
         state_ptr->registered_geometries[i].geometry.id = INVALID_ID;
-        state_ptr->registered_geometries[i].geometry.internal_id = INVALID_ID;
         state_ptr->registered_geometries[i].geometry.generation = INVALID_ID_U16;
     }
 
@@ -148,7 +145,7 @@ void geometry_system_release(geometry* geometry) {
     KWARN("geometry_system_release cannot release invalid geometry id. Nothing was done.");
 }
 
-geometry* geometry_system_get_default() {
+geometry* geometry_system_get_default(void) {
     if (state_ptr) {
         return &state_ptr->default_geometry;
     }
@@ -157,25 +154,29 @@ geometry* geometry_system_get_default() {
     return 0;
 }
 
-geometry* geometry_system_get_default_2d() {
-    if (state_ptr) {
-        return &state_ptr->default_2d_geometry;
+static b8 create_geometry(geometry_system_state* state, geometry_config config, geometry* g) {
+    if (!g) {
+        KERROR("geometry_system->create_geometry requires a valid pointer to geometry.");
+        return false;
     }
-
-    KFATAL("geometry_system_get_default_2d called before system was initialized. Returning nullptr.");
-    return 0;
-}
-
-b8 create_geometry(geometry_system_state* state, geometry_config config, geometry* g) {
-    // Send the geometry off to the renderer to be uploaded to the GPU.
-    if (!renderer_create_geometry(g, config.vertex_size, config.vertex_count, config.vertices, config.index_size, config.index_count, config.indices)) {
+    // Create the geometry.
+    if (!renderer_geometry_create(g, config.vertex_size, config.vertex_count, config.vertices, config.index_size, config.index_count, config.indices)) {
+        KERROR("Geometry creation failed during renderer_geometry_create.");
         // Invalidate the entry.
         state->registered_geometries[g->id].reference_count = 0;
         state->registered_geometries[g->id].auto_release = false;
         g->id = INVALID_ID;
         g->generation = INVALID_ID_U16;
-        g->internal_id = INVALID_ID;
-
+        return false;
+    }
+    // Send the geometry off to the renderer to be uploaded to the GPU.
+    if (!renderer_geometry_upload(g)) {
+        KERROR("Geometry creation failed during renderer_geometry_upload.");
+        // Invalidate the entry.
+        state->registered_geometries[g->id].reference_count = 0;
+        state->registered_geometries[g->id].auto_release = false;
+        g->id = INVALID_ID;
+        g->generation = INVALID_ID_U16;
         return false;
     }
 
@@ -183,6 +184,7 @@ b8 create_geometry(geometry_system_state* state, geometry_config config, geometr
     g->center = config.center;
     g->extents.min = config.min_extents;
     g->extents.max = config.max_extents;
+    g->generation++;
 
     // Acquire the material
     if (string_length(config.material_name) > 0) {
@@ -195,9 +197,8 @@ b8 create_geometry(geometry_system_state* state, geometry_config config, geometr
     return true;
 }
 
-void destroy_geometry(geometry_system_state* state, geometry* g) {
-    renderer_destroy_geometry(g);
-    g->internal_id = INVALID_ID;
+static void destroy_geometry(geometry_system_state* state, geometry* g) {
+    renderer_geometry_destroy(g);
     g->generation = INVALID_ID_U16;
     g->id = INVALID_ID;
 
@@ -210,7 +211,7 @@ void destroy_geometry(geometry_system_state* state, geometry* g) {
     }
 }
 
-b8 create_default_geometries(geometry_system_state* state) {
+static b8 create_default_geometries(geometry_system_state* state) {
     vertex_3d verts[4];
     kzero_memory(verts, sizeof(vertex_3d) * 4);
 
@@ -239,49 +240,17 @@ b8 create_default_geometries(geometry_system_state* state) {
     u32 indices[6] = {0, 1, 2, 0, 3, 1};
 
     // Send the geometry off to the renderer to be uploaded to the GPU.
-    state->default_geometry.internal_id = INVALID_ID;
-    if (!renderer_create_geometry(&state->default_geometry, sizeof(vertex_3d), 4, verts, sizeof(u32), 6, indices)) {
+    if (!renderer_geometry_create(&state->default_geometry, sizeof(vertex_3d), 4, verts, sizeof(u32), 6, indices)) {
         KFATAL("Failed to create default geometry. Application cannot continue.");
+        return false;
+    }
+    if (!renderer_geometry_upload(&state->default_geometry)) {
+        KFATAL("Failed to upload default geometry. Application cannot continue.");
         return false;
     }
 
     // Acquire the default material.
     state->default_geometry.material = material_system_get_default();
-
-    // Create default 2d geometry.
-    vertex_2d verts2d[4];
-    kzero_memory(verts2d, sizeof(vertex_2d) * 4);
-    verts2d[0].position.x = -0.5 * f;  // 0    3
-    verts2d[0].position.y = -0.5 * f;  //
-    verts2d[0].texcoord.x = 0.0f;      //
-    verts2d[0].texcoord.y = 0.0f;      // 2    1
-
-    verts2d[1].position.y = 0.5 * f;
-    verts2d[1].position.x = 0.5 * f;
-    verts2d[1].texcoord.x = 1.0f;
-    verts2d[1].texcoord.y = 1.0f;
-
-    verts2d[2].position.x = -0.5 * f;
-    verts2d[2].position.y = 0.5 * f;
-    verts2d[2].texcoord.x = 0.0f;
-    verts2d[2].texcoord.y = 1.0f;
-
-    verts2d[3].position.x = 0.5 * f;
-    verts2d[3].position.y = -0.5 * f;
-    verts2d[3].texcoord.x = 1.0f;
-    verts2d[3].texcoord.y = 0.0f;
-
-    // Indices (NOTE: counter-clockwise)
-    u32 indices2d[6] = {2, 1, 0, 3, 0, 1};
-
-    // Send the geometry off to the renderer to be uploaded to the GPU.
-    if (!renderer_create_geometry(&state->default_2d_geometry, sizeof(vertex_2d), 4, verts2d, sizeof(u32), 6, indices2d)) {
-        KFATAL("Failed to create default 2d geometry. Application cannot continue.");
-        return false;
-    }
-
-    // Acquire the default material.
-    state->default_2d_geometry.material = material_system_get_default();
 
     return true;
 }
@@ -384,7 +353,7 @@ geometry_config geometry_system_generate_plane_config(f32 width, f32 height, u32
     if (material_name && string_length(material_name) > 0) {
         string_ncopy(config.material_name, material_name, MATERIAL_NAME_MAX_LENGTH);
     } else {
-        string_ncopy(config.material_name, DEFAULT_MATERIAL_NAME, MATERIAL_NAME_MAX_LENGTH);
+        string_ncopy(config.material_name, DEFAULT_PBR_MATERIAL_NAME, MATERIAL_NAME_MAX_LENGTH);
     }
 
     return config;
@@ -553,7 +522,7 @@ geometry_config geometry_system_generate_cube_config(f32 width, f32 height, f32 
     if (material_name && string_length(material_name) > 0) {
         string_ncopy(config.material_name, material_name, MATERIAL_NAME_MAX_LENGTH);
     } else {
-        string_ncopy(config.material_name, DEFAULT_MATERIAL_NAME, MATERIAL_NAME_MAX_LENGTH);
+        string_ncopy(config.material_name, DEFAULT_PBR_MATERIAL_NAME, MATERIAL_NAME_MAX_LENGTH);
     }
 
     geometry_generate_tangents(config.vertex_count, config.vertices, config.index_count, config.indices);

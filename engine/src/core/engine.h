@@ -2,25 +2,28 @@
  * @file engine.h
  * @author Travis Vroman (travis@kohiengine.com)
  * @brief This file contains structures and logic pertaining to the
- * overall engine itself. 
+ * overall engine itself.
  * The engine is responsible for managing both the platform layers
  * as well as all systems within the engine.
  * @version 1.0
  * @date 2022-01-10
- * 
+ *
  * @copyright Kohi Game Engine is Copyright (c) Travis Vroman 2021-2022
- * 
+ *
  */
 
 #pragma once
 
+#include "audio/audio_types.h"
 #include "defines.h"
+#include "renderer/renderer_types.h"
 #include "systems/font_system.h"
-#include "renderer/renderer_types.inl"
 
 struct application;
+struct frame_data;
+struct systems_manager_state;
 
-/** 
+/**
  * @brief Represents configuration for the application. The application config
  * is fed to the engine on creation, so it knows how to configure itself internally.
  */
@@ -43,10 +46,17 @@ typedef struct application_config {
     /** @brief Configuration for the font system. */
     font_system_config font_config;
 
-    /** @brief A darray of render view configurations. */
-    render_view_config* render_views;
+    /** @brief A darray of render views. */
+    render_view* views;
 
     renderer_plugin renderer_plugin;
+    audio_plugin audio_plugin;
+
+    /** @brief The size of the frame allocator. */
+    u64 frame_allocator_size;
+
+    /** @brief The size of the application-specific frame data. Set to 0 if not used. */
+    u64 app_frame_data_size;
 } application_config;
 
 /**
@@ -69,4 +79,20 @@ KAPI b8 engine_run(struct application* game_inst);
  * which internally allows the engine to begin listening for events
  * required for initialization.
  */
-void engine_on_event_system_initialized();
+void engine_on_event_system_initialized(void);
+
+/**
+ * @brief Obtains a constant pointer to the current frame data.
+ *
+ * @param game_inst A pointer to the application instance.
+ * @return A constant pointer to the current frame data.
+ */
+KAPI const struct frame_data* engine_frame_data_get(struct application* game_inst);
+
+/**
+ * @brief Obtains a pointer to the systems manager state.
+ *
+ * @param game_inst A pointer to the application instance.
+ * @return A pointer to the systems manager state.
+ */
+KAPI struct systems_manager_state* engine_systems_manager_state_get(struct application* game_inst);

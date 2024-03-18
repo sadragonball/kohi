@@ -1,12 +1,15 @@
 #include "core/kstring.h"
+
+#include <ctype.h>  // isspace
+#include <stdarg.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "containers/darray.h"
 #include "core/kmemory.h"
 #include "core/logger.h"
-#include "containers/darray.h"
-
-#include <string.h>
-#include <stdio.h>
-#include <stdarg.h>
-#include <ctype.h>  // isspace
+#include "math/kmath.h"
+#include "math/transform.h"
 
 #ifndef _MSC_VER
 #include <strings.h>
@@ -122,7 +125,7 @@ b8 strings_equali(const char* str0, const char* str1) {
 }
 
 b8 strings_nequal(const char* str0, const char* str1, u64 length) {
-    return strncmp(str0, str1, length);
+    return strncmp(str0, str1, length) == 0;
 }
 
 b8 strings_nequali(const char* str0, const char* str1, u64 length) {
@@ -195,13 +198,13 @@ void string_mid(char* dest, const char* source, i32 start, i32 length) {
     if (length == 0) {
         return;
     }
-    u64 src_length = string_length(source);
+    i32 src_length = (i32)string_length(source);
     if (start >= src_length) {
         dest[0] = 0;
         return;
     }
     if (length > 0) {
-        for (u64 i = start, j = 0; j < length && source[i]; ++i, ++j) {
+        for (i32 i = start, j = 0; j < length && source[i]; ++i, ++j) {
             dest[j] = source[i];
         }
         dest[start + length] = 0;
@@ -231,8 +234,183 @@ i32 string_index_of(const char* str, char c) {
     return -1;
 }
 
+i32 string_index_of_str(const char* str_0, const char* str_1) {
+    if (!str_0 || !str_1) {
+        return -1;
+    }
+    u32 length_0 = string_length(str_0);
+    u32 length_1 = string_length(str_1);
+    const char* a = str_0;
+    const char* b = str_1;
+    if (length_1 > length_0) {
+        u32 temp = length_0;
+        length_0 = length_1;
+        length_1 = temp;
+        a = str_1;
+        b = str_0;
+    }
+    if (length_0 > 0 && length_1 > 0) {
+        for (u32 i = 0; i < length_0; ++i) {
+            if (a[i] == b[0]) {
+                u32 start = i;
+                b8 keep_looking = false;
+                for (u32 j = 0; j < length_1; ++j) {
+                    if (a[i + j] != b[j]) {
+                        keep_looking = true;
+                        break;
+                    }
+                }
+                if (!keep_looking) {
+                    return start;
+                }
+            }
+        }
+    }
+
+    return -1;
+}
+
+b8 string_starts_with(const char* str_0, const char* str_1) {
+    if (!str_0 || !str_1) {
+        return false;
+    }
+    u32 length_0 = string_length(str_0);
+    u32 length_1 = string_length(str_1);
+    if (length_0 < length_1) {
+        return false;
+    }
+
+    return strings_nequal(str_0, str_1, length_1);
+}
+
+b8 string_starts_withi(const char* str_0, const char* str_1) {
+    if (!str_0 || !str_1) {
+        return false;
+    }
+    u32 length_0 = string_length(str_0);
+    u32 length_1 = string_length(str_1);
+    if (length_0 < length_1) {
+        return false;
+    }
+
+    return strings_nequali(str_0, str_1, length_1);
+}
+
+void string_insert_char_at(char* dest, const char* src, u32 pos, char c) {
+    u32 len = string_length(src);
+    u32 remaining = len - pos;
+    if (pos > 0) {
+        kcopy_memory(dest, src, sizeof(char) * pos);
+    }
+
+    if (pos < len) {
+        kcopy_memory(dest + pos + 1, src + pos, sizeof(char) * remaining);
+    }
+    dest[pos] = c;
+}
+
+void string_insert_str_at(char* dest, const char* src, u32 pos, const char* str) {
+    u32 len = string_length(src);
+    u32 ins_len = string_length(str);
+    u32 remaining = len - pos;
+    if (pos > 0) {
+        kcopy_memory(dest, src, sizeof(char) * pos);
+    }
+
+    if (pos < len) {
+        kcopy_memory(dest + pos + ins_len, src + pos, sizeof(char) * remaining);
+    }
+
+    kcopy_memory(dest + pos, str, sizeof(char) * ins_len);
+}
+
+void string_remove_at(char* dest, const char* src, u32 pos, u32 length) {
+    u32 original_length = string_length(src);
+    u32 remaining = original_length - pos - length;
+    if (pos > 0) {
+        kcopy_memory(dest, src, sizeof(char) * pos);
+    }
+
+    if (pos < original_length) {
+        kcopy_memory(dest + pos, src + pos + length, sizeof(char) * remaining);
+    }
+    dest[original_length - length] = 0;
+}
+
+b8 string_to_transform(const char* str, transform* out_transform) {
+    if (!str || !out_transform) {
+        return false;
+    }
+
+    kzero_memory(out_transform, sizeof(transform));
+    f32 values[7] = {0};
+
+    i32 count = sscanf(
+        str,
+        "%f %f %f %f %f %f %f %f %f %f",
+        &out_transform->position.x, &out_transform->position.y, &out_transform->position.z,
+        &values[0], &values[1], &values[2], &values[3], &values[4], &values[5], &values[6]);
+
+    if (count == 10) {
+        // Treat as quat, load directly.
+        out_transform->rotation.x = values[0];
+        out_transform->rotation.y = values[1];
+        out_transform->rotation.z = values[2];
+        out_transform->rotation.w = values[3];
+
+        // Set scale
+        out_transform->scale.x = values[4];
+        out_transform->scale.y = values[5];
+        out_transform->scale.z = values[6];
+    } else if (count == 9) {
+        quat x_rot = quat_from_axis_angle((vec3){1.0f, 0, 0}, deg_to_rad(values[0]), true);
+        quat y_rot = quat_from_axis_angle((vec3){0, 1.0f, 0}, deg_to_rad(values[1]), true);
+        quat z_rot = quat_from_axis_angle((vec3){0, 0, 1.0f}, deg_to_rad(values[2]), true);
+        out_transform->rotation = quat_mul(x_rot, quat_mul(y_rot, z_rot));
+
+        // Set scale
+        out_transform->scale.x = values[3];
+        out_transform->scale.y = values[4];
+        out_transform->scale.z = values[5];
+    } else {
+        KWARN("Format error: invalid transform provided. Identity transform will be used.");
+        *out_transform = transform_create();
+        return false;
+    }
+
+    out_transform->is_dirty = true;
+
+    return true;
+}
+
+b8 string_to_mat4(const char* str, mat4* out_mat) {
+    if (!str || !out_mat) {
+        return false;
+    }
+
+    kzero_memory(out_mat, sizeof(mat4));
+    i32 result = sscanf(str, "%f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f",
+                        &out_mat->data[0],
+                        &out_mat->data[1],
+                        &out_mat->data[2],
+                        &out_mat->data[3],
+                        &out_mat->data[4],
+                        &out_mat->data[5],
+                        &out_mat->data[6],
+                        &out_mat->data[7],
+                        &out_mat->data[8],
+                        &out_mat->data[9],
+                        &out_mat->data[10],
+                        &out_mat->data[11],
+                        &out_mat->data[12],
+                        &out_mat->data[13],
+                        &out_mat->data[14],
+                        &out_mat->data[15]);
+    return result != -1;
+}
+
 b8 string_to_vec4(const char* str, vec4* out_vector) {
-    if (!str) {
+    if (!str || !out_vector) {
         return false;
     }
 
@@ -242,7 +420,7 @@ b8 string_to_vec4(const char* str, vec4* out_vector) {
 }
 
 b8 string_to_vec3(const char* str, vec3* out_vector) {
-    if (!str) {
+    if (!str || !out_vector) {
         return false;
     }
 
@@ -252,7 +430,7 @@ b8 string_to_vec3(const char* str, vec3* out_vector) {
 }
 
 b8 string_to_vec2(const char* str, vec2* out_vector) {
-    if (!str) {
+    if (!str || !out_vector) {
         return false;
     }
 
@@ -262,7 +440,7 @@ b8 string_to_vec2(const char* str, vec2* out_vector) {
 }
 
 b8 string_to_f32(const char* str, f32* f) {
-    if (!str) {
+    if (!str || !f) {
         return false;
     }
 
@@ -272,7 +450,7 @@ b8 string_to_f32(const char* str, f32* f) {
 }
 
 b8 string_to_f64(const char* str, f64* f) {
-    if (!str) {
+    if (!str || !f) {
         return false;
     }
 
@@ -282,7 +460,7 @@ b8 string_to_f64(const char* str, f64* f) {
 }
 
 b8 string_to_i8(const char* str, i8* i) {
-    if (!str) {
+    if (!str || !i) {
         return false;
     }
 
@@ -292,7 +470,7 @@ b8 string_to_i8(const char* str, i8* i) {
 }
 
 b8 string_to_i16(const char* str, i16* i) {
-    if (!str) {
+    if (!str || !i) {
         return false;
     }
 
@@ -302,7 +480,7 @@ b8 string_to_i16(const char* str, i16* i) {
 }
 
 b8 string_to_i32(const char* str, i32* i) {
-    if (!str) {
+    if (!str || !i) {
         return false;
     }
 
@@ -312,7 +490,7 @@ b8 string_to_i32(const char* str, i32* i) {
 }
 
 b8 string_to_i64(const char* str, i64* i) {
-    if (!str) {
+    if (!str || !i) {
         return false;
     }
 
@@ -322,7 +500,7 @@ b8 string_to_i64(const char* str, i64* i) {
 }
 
 b8 string_to_u8(const char* str, u8* u) {
-    if (!str) {
+    if (!str || !u) {
         return false;
     }
 
@@ -332,7 +510,7 @@ b8 string_to_u8(const char* str, u8* u) {
 }
 
 b8 string_to_u16(const char* str, u16* u) {
-    if (!str) {
+    if (!str || !u) {
         return false;
     }
 
@@ -342,7 +520,7 @@ b8 string_to_u16(const char* str, u16* u) {
 }
 
 b8 string_to_u32(const char* str, u32* u) {
-    if (!str) {
+    if (!str || !u) {
         return false;
     }
 
@@ -352,7 +530,7 @@ b8 string_to_u32(const char* str, u32* u) {
 }
 
 b8 string_to_u64(const char* str, u64* u) {
-    if (!str) {
+    if (!str || !u) {
         return false;
     }
 
@@ -362,7 +540,7 @@ b8 string_to_u64(const char* str, u64* u) {
 }
 
 b8 string_to_bool(const char* str, b8* b) {
-    if (!str) {
+    if (!str || !b) {
         return false;
     }
 
@@ -486,6 +664,7 @@ void string_directory_from_path(char* dest, const char* path) {
         char c = path[i];
         if (c == '/' || c == '\\') {
             strncpy(dest, path, i + 1);
+            dest[i + 2] = 0;
             return;
         }
     }
@@ -518,6 +697,24 @@ void string_filename_no_extension_from_path(char* dest, const char* path) {
     }
 
     string_mid(dest, path, start, end - start);
+}
+
+b8 string_parse_array_length(const char* str, u32* out_length) {
+    if (!str || !out_length) {
+        return false;
+    }
+
+    i32 open_index = string_index_of(str, '[');
+    i32 close_index = string_index_of(str, ']');
+    if (open_index == -1 || close_index == -1) {
+        return false;
+    }
+
+    // Extract text from between the brackets.
+    char num_string[20] = {0};
+    string_mid(num_string, str, open_index + 1, close_index - open_index);
+
+    return string_to_u32(num_string, out_length);
 }
 
 // ----------------------

@@ -2,13 +2,15 @@
     "workbench.colorTheme": "Gruvbox Dark (Hard)",
     "xmlTools.enforcePrettySelfClosingTagOnFormat": true,
     "editor.minimap.enabled": false,
-    // "terminal.integrated.fontWeight": "1",
-    "editor.fontSize": 13,
-    "editor.formatOnSave": true,
-    "editor.fontFamily": "JetBrains Mono, Consolas, 'Courier New', monospace",
-    "editor.lineHeight": 1.2,
-    // "editor.fontWeight": "1",
-    "workbench.editor.showTabs": true,
+    "terminal.integrated.shell.windows": "c:/Program Files/PowerShell/7/pwsh.exe",
+    "terminal.integrated.fontWeight": "1",
+    "editor.fontSize": 16,
+    "editor.fontWeight": "1",
+    "workbench.editor.showTabs": "multiple",
+    "workbench.colorCustomizations": {
+        "editorCursor.foreground": "#00ff33",
+        "editor.lineHighlightBackground": "#111144"
+    },
     "workbench.statusBar.visible": true,
     "editor.lineNumbers": "on",
     "C_Cpp.clang_format_style": "{ BasedOnStyle: Google, IndentWidth: 4, ColumnLimit: 0, NamespaceIndentation: All}",
@@ -18,7 +20,8 @@
     "C_Cpp.vcFormat.space.pointerReferenceAlignment": "left",
     "C_Cpp.clang_format_sortIncludes": false,
     "C_Cpp.vcFormat.indent.namespaceContents": true,
-    "window.zoomLevel": 0.3,
+    "editor.cursorStyle": "block",
+    "window.zoomLevel": 1,
     "editor.tabCompletion": "on",
     "todohighlight.isEnable": true,
     "todohighlight.keywords": [
@@ -29,7 +32,7 @@
             "overviewRulerColor": "rgba(0,0,0,0)"
         },
         {
-            "text": "TODO(Fujun):",
+            "text": "TODO(travis):",
             "color": "red",
             "backgroundColor": "rgba(0,0,0,0)",
             "overviewRulerColor": "rgba(0,0,0,0)"
@@ -68,8 +71,8 @@
         "utility": "cpp",
         "kmemory.h": "c",
         "defines.h": "c",
-        "vulkan_types.inl": "c",
-        "clock.h": "c",
+        "vulkan_types.h": "c",
+        "kclock.h": "c",
         "kstring.h": "c",
         "logger.h": "c",
         "stb_image.h": "c",
@@ -102,8 +105,12 @@
         "vulkan_backend.h": "c",
         "input.h": "c",
         "ui_text.h": "c",
-        "linear_allocator.h": "c",
-        "editor_state.h": "c"
+        "xmemory": "c",
+        "geometry_utils.h": "c",
+        "shader_system.h": "c",
+        "renderer_types.h": "c",
+        "transform.h": "c",
+        "windows.h": "c"
     },
     // File copyright documentation tag.  Array of strings will be converted to one line per element.  Can template {year}.
     "doxdocgen.file.copyrightTag": [
@@ -125,5 +132,4 @@
         "empty",
         "custom"
     ],
-    "C_Cpp.errorSquiggles": "disabled",
 }

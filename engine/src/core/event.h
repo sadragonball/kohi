@@ -2,16 +2,16 @@
  * @file event.h
  * @author Travis Vroman (travis@kohiengine.com)
  * @brief This file contains structures and functions specific to the
- * event system. 
+ * event system.
  * Events are a mechenism that allows the developer to send and recieve
  * data at critical points in the execution of the application in a non-
  * coupled way. For now, this follows a simple pub-sub model of event
  * transmission.
  * @version 1.0
  * @date 2022-01-10
- * 
+ *
  * @copyright Kohi Game Engine is Copyright (c) Travis Vroman 2021-2022
- * 
+ *
  */
 
 #pragma once
@@ -100,7 +100,7 @@ KAPI b8 event_register(u16 code, void* listener, PFN_on_event on_event);
 KAPI b8 event_unregister(u16 code, void* listener, PFN_on_event on_event);
 
 /**
- * @brief Fires an event to listeners of the given code. If an event handler returns 
+ * @brief Fires an event to listeners of the given code. If an event handler returns
  * true, the event is considered handled and is not passed on to any more listeners.
  * @param code The event code to fire.
  * @param sender A pointer to the sender. Can be 0/NULL.
@@ -117,46 +117,60 @@ typedef enum system_event_code {
     /** @brief Keyboard key pressed.
      * Context usage:
      * u16 key_code = data.data.u16[0];
+     * u16 repeat_count = data.data.u16[1];
      */
     EVENT_CODE_KEY_PRESSED = 0x02,
 
     /** @brief Keyboard key released.
      * Context usage:
      * u16 key_code = data.data.u16[0];
+     * u16 repeat_count = data.data.u16[1];
      */
     EVENT_CODE_KEY_RELEASED = 0x03,
 
     /** @brief Mouse button pressed.
      * Context usage:
      * u16 button = data.data.u16[0];
+     * u16 x = data.data.i16[1];
+     * u16 y = data.data.i16[2];
      */
     EVENT_CODE_BUTTON_PRESSED = 0x04,
 
     /** @brief Mouse button released.
      * Context usage:
      * u16 button = data.data.u16[0];
+     * u16 x = data.data.i16[1];
+     * u16 y = data.data.i16[2];
      */
     EVENT_CODE_BUTTON_RELEASED = 0x05,
+
+    /** @brief Mouse button pressed then released.
+     * Context usage:
+     * u16 button = data.data.u16[0];
+     * u16 x = data.data.i16[1];
+     * u16 y = data.data.i16[2];
+     */
+    EVENT_CODE_BUTTON_CLICKED = 0x06,
 
     /** @brief Mouse moved.
      * Context usage:
      * u16 x = data.data.i16[0];
      * u16 y = data.data.i16[1];
      */
-    EVENT_CODE_MOUSE_MOVED = 0x06,
+    EVENT_CODE_MOUSE_MOVED = 0x07,
 
     /** @brief Mouse moved.
      * Context usage:
      * ui z_delta = data.data.i8[0];
      */
-    EVENT_CODE_MOUSE_WHEEL = 0x07,
+    EVENT_CODE_MOUSE_WHEEL = 0x08,
 
     /** @brief Resized/resolution changed from the OS.
      * Context usage:
      * u16 width = data.data.u16[0];
      * u16 height = data.data.u16[1];
      */
-    EVENT_CODE_RESIZED = 0x08,
+    EVENT_CODE_RESIZED = 0x09,
 
     // Change the render mode for debugging purposes.
     /* Context usage:
@@ -181,7 +195,7 @@ typedef enum system_event_code {
      */
     EVENT_CODE_OBJECT_HOVER_ID_CHANGED = 0x15,
 
-    /** 
+    /**
      * @brief An event fired by the renderer backend to indicate when any render targets
      * associated with the default window resources need to be refreshed (i.e. a window resize)
      */
@@ -197,7 +211,7 @@ typedef enum system_event_code {
      * Context usage:
      * u32 watch_id = context.data.u32[0];
      */
-    EVENT_CODE_WATCHED_FILE_WRITTEN = 0X18,
+    EVENT_CODE_WATCHED_FILE_WRITTEN = 0x18,
 
     /**
      * @brief An event fired when a watched file has been removed.
@@ -205,6 +219,38 @@ typedef enum system_event_code {
      * u32 watch_id = context.data.u32[0];
      */
     EVENT_CODE_WATCHED_FILE_DELETED = 0x19,
+
+    /**
+     * @brief An event fired while a button is being held down and the
+     * mouse is moved.
+     *
+     * Context usage:
+     * i16 x = context.data.i16[0]
+     * i16 y = context.data.i16[1]
+     * u16 button = context.data.u16[2]
+     */
+    EVENT_CODE_MOUSE_DRAGGED = 0x20,
+
+    /**
+     * @brief An event fired when a button is pressed and a mouse movement
+     * is done while it is pressed.
+     *
+     * Context usage:
+     * i16 x = context.data.i16[0]
+     * i16 y = context.data.i16[1]
+     * u16 button = context.data.u16[2]
+     */
+    EVENT_CODE_MOUSE_DRAG_BEGIN = 0x21,
+
+    /**
+     * @brief An event fired when a button is released was previously dragging.
+     *
+     * Context usage:
+     * i16 x = context.data.i16[0]
+     * i16 y = context.data.i16[1]
+     * u16 button = context.data.u16[2]
+     */
+    EVENT_CODE_MOUSE_DRAG_END = 0x22,
 
     /** @brief The maximum event code that can be used internally. */
     MAX_EVENT_CODE = 0xFF

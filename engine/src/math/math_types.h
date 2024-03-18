@@ -113,7 +113,9 @@ typedef union vec4_u {
                     /** @brief The third element. */
                     b,
                     /** @brief The third element. */
-                    p;
+                    p,
+                    /** @brief The third element. */
+                    width;
             };
             union {
                 /** @brief The fourth element. */
@@ -121,7 +123,9 @@ typedef union vec4_u {
                     /** @brief The fourth element. */
                     a,
                     /** @brief The fourth element. */
-                    q;
+                    q,
+                    /** @brief The fourth element. */
+                    height;
             };
         };
     };
@@ -129,6 +133,15 @@ typedef union vec4_u {
 
 /** @brief A quaternion, used to represent rotational orientation. */
 typedef vec4 quat;
+
+/** @brief A 2d rectangle. */
+typedef vec4 rect_2d;
+
+/** @brief A 3x3 matrix */
+typedef union mat3_u {
+    /** @brief The matrix elements. */
+    f32 data[12];
+} mat3;
 
 /** @brief a 4x4 matrix, typically used to represent object transformations. */
 typedef union mat4_u {
@@ -183,6 +196,16 @@ typedef struct vertex_2d {
 } vertex_2d;
 
 /**
+ * @brief Represents a single vertex in 3D space with position and colour data only.
+ */
+typedef struct colour_vertex_3d {
+    /** @brief The position of the vertex. w is ignored. */
+    vec4 position;
+    /** @brief The colour of the vertex. */
+    vec4 colour;
+} colour_vertex_3d;
+
+/**
  * @brief Represents the transform of an object in the world.
  * Transforms can have a parent whose own transform is then
  * taken into account. NOTE: The properties of this should not
@@ -207,6 +230,8 @@ typedef struct transform {
      */
     mat4 local;
 
+    f32 determinant;
+
     /** @brief A pointer to a parent transform if one is assigned. Can also be null. */
     struct transform* parent;
 } transform;
@@ -216,7 +241,96 @@ typedef struct plane_3d {
     f32 distance;
 } plane_3d;
 
+#define FRUSTUM_SIDE_COUNT 6
+
+typedef enum frustum_side {
+    FRUSTUM_SIDE_TOP = 0,
+    FRUSTUM_SIDE_BOTTOM = 1,
+    FRUSTUM_SIDE_RIGHT = 2,
+    FRUSTUM_SIDE_LEFT = 3,
+    FRUSTUM_SIDE_FAR = 4,
+    FRUSTUM_SIDE_NEAR = 5,
+} frustum_side;
+
 typedef struct frustum {
     // Top, bottom, right, left, far, near
-    plane_3d sides[6];
+    plane_3d sides[FRUSTUM_SIDE_COUNT];
 } frustum;
+
+/**
+ * @brief A 2-element integer-based vector.
+ */
+typedef union vec2i_t {
+    /** @brief An array of x, y */
+    i32 elements[2];
+    struct {
+        union {
+            /** @brief The first element. */
+            i32 x,
+                /** @brief The first element. */
+                r,
+                /** @brief The first element. */
+                s,
+                /** @brief The first element. */
+                u;
+        };
+        union {
+            /** @brief The second element. */
+            i32 y,
+                /** @brief The second element. */
+                g,
+                /** @brief The second element. */
+                t,
+                /** @brief The second element. */
+                v;
+        };
+    };
+} vec2i;
+
+/**
+ * @brief A 4-element integer-based vector.
+ */
+typedef union vec4i_t {
+    /** @brief An array of x, y, z, w */
+    i32 elements[4];
+    union {
+        struct {
+            union {
+                /** @brief The first element. */
+                i32 x,
+                    /** @brief The first element. */
+                    r,
+                    /** @brief The first element. */
+                    s;
+            };
+            union {
+                /** @brief The second element. */
+                i32 y,
+                    /** @brief The third element. */
+                    g,
+                    /** @brief The third element. */
+                    t;
+            };
+            union {
+                /** @brief The third element. */
+                i32 z,
+                    /** @brief The third element. */
+                    b,
+                    /** @brief The third element. */
+                    p,
+                    /** @brief The third element. */
+                    width;
+            };
+            union {
+                /** @brief The fourth element. */
+                i32 w,
+                    /** @brief The fourth element. */
+                    a,
+                    /** @brief The fourth element. */
+                    q,
+                    /** @brief The fourth element. */
+                    height;
+            };
+        };
+    };
+} vec4i;

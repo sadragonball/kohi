@@ -3,4 +3,7 @@ obj/
 *.spv
 docs/
 
-engine/src/version.h
+*.vim
+*_version.h
+
+*compile_flags.txt
